@@ -6,6 +6,8 @@ swift build -c "$configuration" --product Laut --jobs 4
 binary_dir="$(swift build -c "$configuration" --show-bin-path)"
 app_dir="$PWD/dist/Laut.app"
 mkdir -p "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources"
+# Upstream license/resource files may have been copied read-only on a prior build.
+chmod -R u+w "$app_dir/Contents/Resources"
 cp "$binary_dir/Laut" "$app_dir/Contents/MacOS/Laut"
 cp Resources/Info.plist "$app_dir/Contents/Info.plist"
 cp Resources/mlx_worker.py "$app_dir/Contents/Resources/"
