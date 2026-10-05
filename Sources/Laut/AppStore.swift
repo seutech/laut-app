@@ -7,16 +7,16 @@ import LautAudio
 
 @MainActor
 final class AppStore: ObservableObject {
-    @Published var recordings: [Recording] = []
+    @Published var recordings: [Recording] = [] { didSet { searchRevision += 1; scheduleSearch() } }
     @Published var selected: UUID? { didSet { if selected != oldValue { stopPlayback() } } }
     @Published var section = "library"
-    @Published var search = ""
+    @Published var search = "" { didSet { scheduleSearch(show: true) } }
     @Published var settings = AppSettings()
     @Published var vocabulary: [VocabularyEntry] = []
     @Published var status = "Bereit · lokal auf deinem Mac"
-    @Published var busy = false
+    @Published var busy = false { didSet { scheduleSearch() } }
     @Published var error: String?
-    @Published var isRecording = false
+    @Published var isRecording = false { didSet { scheduleSearch() } }
     @Published var playerTime: Double = 0
     @Published var playing = false
     @Published var playbackDuration: Double = 0
@@ -28,6 +28,24 @@ final class AppStore: ObservableObject {
     private var observedModelKey: String?
     private var automaticPreparation = true
     let library: Library
+    let searchIndex: SearchIndex
+    let embeddings: EmbeddingEngine
+    @Published var searchHits: [SearchHit] = []
+    @Published var searchStatus = ""
+    @Published var searching = false
+    @Published var searchSpeaker = "" { didSet { scheduleSearch() } }
+    @Published var searchDays = 0 { didSet { scheduleSearch() } }
+    @Published var searchRecording: UUID? { didSet { scheduleSearch() } }
+    @Published var searchDestination: SearchHit?
+    @Published var downloadProgress = ""
+    var downloadGeneration = UUID()
+    var searchRevision = 0
+    var indexedSearchRevision: Int?
+    @Published var libraryAnswer = ""
+    @Published var answerSources: [SearchHit] = []
+    @Published var answering = false
+    var searchTask: Task<Void, Never>?
+    var embeddingIdleTask: Task<Void, Never>?
     let engine: TranscriptionEngine
     let analyzer = SpeakerAnalyzer()
     var task: Task<Void, Never>?
@@ -52,6 +70,8 @@ final class AppStore: ObservableObject {
         // Failure to open the real library must never silently create a different one.
         do { library = try Library(root: base) } catch { fatalError("Bibliothek nicht erreichbar: \(error)") }
         let resource = Bundle.main.resourceURL ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("Resources")
+        searchIndex = SearchIndex(url: base.appendingPathComponent("search-v1.sqlite"))
+        embeddings = EmbeddingEngine(script: resource.appendingPathComponent("embedding_worker.py"))
         engine = TranscriptionEngine(worker: resource.appendingPathComponent("mlx_worker.py"))
         do {
             recordings = try library.load()
@@ -78,6 +98,17 @@ final class AppStore: ObservableObject {
                 }
             }
         }
+        for model in EmbeddingModel.allCases where settings.embeddingPaths?[model.rawValue] == nil {
+            let folder = URL(fileURLWithPath: settings.runtimeDirectory).appendingPathComponent("models/huggingface/models--" + model.modelID.replacingOccurrences(of: "/", with: "--") + "/snapshots")
+            let candidates = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? []
+            for candidate in candidates.sorted(by: { $0.path < $1.path }) {
+                if let data = try? Data(contentsOf: candidate.appendingPathComponent(".laut-complete.json")),
+                   let marker = try? JSONSerialization.jsonObject(with: data) as? [String: String], marker["modelID"] == model.modelID,
+                   FileManager.default.fileExists(atPath: candidate.appendingPathComponent("model.safetensors").path) {
+                    var paths = settings.embeddingPaths ?? [:]; paths[model.rawValue] = candidate.path; settings.embeddingPaths = paths
+                }
+            }
+        }
         timer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
@@ -99,6 +130,7 @@ final class AppStore: ObservableObject {
         }
         observedModelKey = selectedModelKey
         prepareSelectedModel()
+        scheduleSearch()
     }
     private var selectedModelKey: String {
         [settings.runtimeDirectory, settings.engine.rawValue, settings.modelPaths[settings.engine.rawValue] ?? ""].joined(separator: "\n")
@@ -140,7 +172,7 @@ final class AppStore: ObservableObject {
     }
     var current: Recording? { recordings.first { $0.id == selected } }
     var modelDirectory: URL { URL(fileURLWithPath: settings.runtimeDirectory).appendingPathComponent("models/diarization") }
-    var filtered: [Recording] { recordings.filter { search.isEmpty || ($0.title + " " + $0.plainText + " " + $0.notes).localizedCaseInsensitiveContains(search) } }
+    var filtered: [Recording] { recordings }
     func saveSettings() {
         do { try library.saveSettings(settings) } catch { self.error = error.localizedDescription }
         if observedModelKey != selectedModelKey {
@@ -322,7 +354,7 @@ final class AppStore: ObservableObject {
     }
     func download(_ model: EngineKind) {
         perform("\(model.label) wird heruntergeladen …") {
-            let path = try await self.engine.download(model, settings: self.settings)
+            let path = try await self.engine.download(model, settings: self.settings, progress: self.downloadReporter)
             self.settings.modelPaths[model.rawValue] = path; self.saveSettings()
         }
     }
@@ -334,14 +366,14 @@ final class AppStore: ObservableObject {
     }
     func downloadLLM() {
         perform("Textmodell herunterladen …") {
-            self.settings.llmModelPath = try await self.engine.downloadModel(self.settings.llmModelID, settings: self.settings); self.saveSettings()
+            self.settings.llmModelPath = try await self.engine.downloadModel(self.settings.llmModelID, settings: self.settings, progress: self.downloadReporter); self.saveSettings()
         }
     }
     func perform(_ message: String, operation: @escaping @MainActor () async throws -> Void) {
-        guard !busy, !isRecording else { return }; busy = true; status = message
+        guard !busy, !isRecording else { return }; busy = true; status = message; downloadProgress = ""; downloadGeneration = UUID()
         preparedModelKey = nil; modelStatus = "Modell durch anderen Vorgang belegt"
         task = Task {
-            defer { busy = false; task = nil; prepareSelectedModel() }
+            defer { busy = false; task = nil; downloadGeneration = UUID(); downloadProgress = ""; prepareSelectedModel() }
             do { try await operation(); try Task.checkCancellation(); status = "Fertig · lokal gespeichert" }
             catch { self.error = error.localizedDescription; status = "Vorgang nicht abgeschlossen" }
         }
@@ -354,10 +386,13 @@ final class AppStore: ObservableObject {
         let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false
         if panel.runModal() == .OK, let url = panel.url { apply(url.path); saveSettings() }
     }
-    func refine(_ id: UUID) {
+    func refine(_ id: UUID, template: TextTemplate = .custom) {
         guard let record = recordings.first(where: { $0.id == id }) else { return }
+        var config = settings
+        if let instructions = template.instructions { config.customInstructions = instructions }
         perform("Text mit lokalem Modell bearbeiten …") {
-            let text = try await self.engine.refine(record.kind == .note ? record.notes : record.plainText, settings: self.settings)
+            let source = record.kind == .note ? record.notes : record.plainText + (record.notes.isEmpty ? "" : "\n\nEigene Notizen:\n" + record.notes)
+            let text = try await self.engine.refine(source, settings: config)
             try Task.checkCancellation()
             guard self.edit(id, label: "KI-Bearbeitung", change: { $0.refinedText = text }) else { throw LocalEngineError("Textbearbeitung konnte nicht gespeichert werden.") }
         }

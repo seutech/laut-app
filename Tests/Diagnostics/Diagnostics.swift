@@ -6,6 +6,10 @@ import LautAudio
     static func main() async throws {
         let args = CommandLine.arguments
         let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        if args.contains("--search-checks") {
+            guard let path = try DiagnosticConfiguration.value("--model", in: args) else { throw LocalEngineError("Provide --model with a local E5 small directory") }
+            try await SearchWorkflow.run(project: root, model: path); return
+        }
         if args.contains("--audio-interface-checks") { try await AudioInterfaceChecks.run(); return }
         let analyzer = SpeakerAnalyzer()
         let models = root.appendingPathComponent(".runtime/models/diarization")

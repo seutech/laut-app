@@ -8,6 +8,8 @@ Laut does not claim ownership of the models or the libraries it integrates.
 | Fermion runtime 0.2.9 | [Fermion Research](https://github.com/fermionresearch/phonon) | Apache-2.0 |
 | Phonon-2 weights | [Fermion Research](https://huggingface.co/FermionResearch/Phonon-2), derived from NVIDIA Parakeet v3 | CC-BY-4.0; upstream NOTICE describes changes |
 | Parakeet v3 weights | [NVIDIA](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3), [MLX conversion](https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3) | CC-BY-4.0 |
+| Multilingual E5 Small / Base weights (optional download) | [Microsoft / intfloat](https://huggingface.co/intfloat/multilingual-e5-small) | MIT |
+| SQLite (macOS system library) | [SQLite](https://sqlite.org/) | Public domain |
 | MLX / MLX-LM | [Apple ML Explore](https://github.com/ml-explore) | MIT |
 | MLX-Audio | [Blaizzy / contributors](https://github.com/Blaizzy/mlx-audio) | MIT |
 

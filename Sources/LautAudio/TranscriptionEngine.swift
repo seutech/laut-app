@@ -60,7 +60,7 @@ public final class TranscriptionEngine: @unchecked Sendable {
         guard let path = settings.modelPaths[settings.engine.rawValue] else { throw LocalEngineError("Bitte zuerst ein Modell installieren.") }
         _ = try await request(["operation": "preload", "engine": settings.engine.rawValue, "modelPath": path], settings: settings)
     }
-    public func download(_ engine: EngineKind, settings: AppSettings) async throws -> String {
+    public func download(_ engine: EngineKind, settings: AppSettings, progress: @escaping @Sendable (String) -> Void = { _ in }) async throws -> String {
         let cache = URL(fileURLWithPath: settings.runtimeDirectory).appendingPathComponent("models")
         try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
         if engine == .phonon {
@@ -70,10 +70,23 @@ public final class TranscriptionEngine: @unchecked Sendable {
             guard FileManager.default.fileExists(atPath: path) else { throw LocalEngineError("Download lieferte keinen gültigen Modellordner.") }
             return path
         }
-        return try await downloadModel(engine.modelID, settings: settings)
+        return try await downloadModel(engine.modelID, settings: settings, progress: progress)
     }
-    public func downloadModel(_ modelID: String, settings: AppSettings) async throws -> String {
-        let data = try await request(["operation": "download", "modelID": modelID, "cache": settings.runtimeDirectory + "/models/huggingface"], settings: settings, online: true)
+    public func downloadModel(_ modelID: String, settings: AppSettings, progress: @escaping @Sendable (String) -> Void = { _ in }) async throws -> String {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("laut-download-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let file = folder.appendingPathComponent("progress.json")
+        let monitor = Task {
+            while !Task.isCancelled {
+                if let data = try? Data(contentsOf: file), let info = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let completed = info["completed"] as? Double, let total = info["total"] as? Double, total > 0 {
+                    progress("\(Int(completed / total * 100)) % · \(ByteCountFormatter.string(fromByteCount: Int64(completed), countStyle: .file)) / \(ByteCountFormatter.string(fromByteCount: Int64(total), countStyle: .file))")
+                }
+                try? await Task.sleep(for: .milliseconds(300))
+            }
+        }
+        defer { monitor.cancel(); try? FileManager.default.removeItem(at: folder) }
+        let data = try await request(["operation": "download", "modelID": modelID, "cache": settings.runtimeDirectory + "/models/huggingface", "progressPath": file.path], settings: settings, online: true)
         let result = try JSONSerialization.jsonObject(with: data) as? [String: String]
         guard let path = result?["path"] else { throw LocalEngineError("Modell-Download fehlgeschlagen.") }; return path
     }

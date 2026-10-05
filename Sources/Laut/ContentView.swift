@@ -15,6 +15,7 @@ struct ContentView: View {
                 }.padding(.top, 16)
                 VStack(spacing: 6) {
                     nav("Bibliothek", symbol: "rectangle.stack", key: "library")
+                    nav("Suche", symbol: "magnifyingglass", key: "search")
                     nav("Wörterbuch", symbol: "text.book.closed", key: "vocabulary")
                     nav("Modelle", symbol: "cpu", key: "models")
                     nav("Einstellungen", symbol: "slider.horizontal.3", key: "settings")
@@ -48,6 +49,7 @@ struct ContentView: View {
             VStack(spacing: 0) {
                 Group {
                     switch store.section {
+                    case "search": SearchView()
                     case "vocabulary": VocabularyView()
                     case "models": ModelsView()
                     case "settings": PreferencesView()
@@ -61,7 +63,7 @@ struct ContentView: View {
                     if store.busy { ProgressView().controlSize(.small) }
                     else { Image(systemName: store.isRecording ? "record.circle.fill" : "lock.fill").foregroundStyle(store.isRecording ? .red : .teal) }
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(store.status).font(.caption).lineLimit(2)
+                        Text(store.downloadProgress.isEmpty ? store.status : store.status + " · " + store.downloadProgress).font(.caption).lineLimit(2)
                         Text(store.modelStatus).font(.caption2).foregroundStyle(store.modelReady ? .teal : .secondary)
                     }
                     Spacer()
@@ -122,6 +124,7 @@ struct RecordingView: View {
     @EnvironmentObject var store: AppStore
     let record: Recording
     @State private var tab = 0
+    @State private var textTemplate: TextTemplate = .custom
     @State private var speakerCount = 0
     @State private var splitSegment: Segment?
     @State private var confirmDelete = false
@@ -214,20 +217,26 @@ struct RecordingView: View {
                 case 2: TextEditor(text: binding(\.notes)).font(.body).padding(8).overlay(alignment: .topLeading) { if record.notes.isEmpty { Text("Gedanken, Stichpunkte, Aufgaben …").foregroundStyle(.tertiary).padding(13).allowsHitTesting(false) } }
                 case 3:
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("Deine Anweisungen aus den Einstellungen werden auf den Text angewendet. Das Ergebnis bleibt getrennt vom Original.").font(.callout).foregroundStyle(.secondary)
-                        Button("Lokal bearbeiten") { store.refine(record.id) }.disabled(store.busy)
+                        Text("Wähle eine Vorlage oder deine eigenen Anweisungen. Transkript und Notizen dienen als Grundlage; das Ergebnis bleibt getrennt vom Original.").font(.callout).foregroundStyle(.secondary)
+                        Picker("Vorlage", selection: $textTemplate) { ForEach(TextTemplate.allCases) { Text($0.label).tag($0) } }.frame(maxWidth: 400)
+                        Button("Lokal bearbeiten") { store.refine(record.id, template: textTemplate) }.disabled(store.busy)
                         TextEditor(text: binding(\.refinedText)).font(.body)
                     }
                 default: transcript
                 }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
         }.padding(24)
-        .onAppear { if record.kind == .note { tab = 2 } }
+        .onAppear { applySearchDestination(); if record.kind == .note { tab = 2 } }
+        .onChange(of: store.searchDestination?.id) { applySearchDestination() }
         .sheet(item: $splitSegment) { segment in SplitView(segment: segment) { pieces in
             store.edit(record.id, label: "Abschnitt teilen") { item in if let index = item.segments.firstIndex(where: { $0.id == segment.id }) { item.segments.replaceSubrange(index...index, with: pieces) } }
         } }
         .confirmationDialog("Eintrag und zugehörige lokale Dateien endgültig löschen?", isPresented: $confirmDelete) { Button("Löschen", role: .destructive) { store.delete(record) } }
         .confirmationDialog("Audiodateien löschen? Text und Notizen bleiben erhalten. Wiedergabe und neue Sprecheranalyse sind danach nicht mehr möglich.", isPresented: $confirmAudioDelete) { Button("Audio löschen", role: .destructive) { store.removeAudio(record.id) } }
+    }
+    func applySearchDestination() {
+        guard let hit = store.searchDestination, hit.passage.recordingID == record.id else { return }
+        tab = hit.passage.source == "Notizen" ? 2 : hit.passage.source == "Text-KI" ? 3 : 0
     }
     var transcript: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -271,6 +280,12 @@ struct RecordingView: View {
                             }
                         }
                     }
+                }
+                .task(id: store.searchDestination?.id) {
+                    guard let hit = store.searchDestination, hit.passage.recordingID == record.id, let time = hit.passage.start else { return }
+                    let segment = record.segments.first { $0.start == time }
+                    let target = editingTranscript ? segment?.id : visibleParagraphs.first { $0.segments.contains { $0.id == segment?.id } }?.id
+                    if let target { proxy.scrollTo(target, anchor: .center) }
                 }
                 .onChange(of: activeSegmentID) { _, id in
                     if followPlayback, store.playing, focusedSegment == nil, let id {

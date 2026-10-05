@@ -3,7 +3,7 @@ import LautCore
 
 @main
 struct TranscriptTests {
-    static func main() throws {
+    static func main() async throws {
         let suite = TranscriptTests()
         suite.testDiarizationRespectsManualSpeakerAndTextEdits()
         suite.testWordTimestampsSplitSpeakersWithoutLosingWords()
@@ -28,6 +28,7 @@ struct TranscriptTests {
         suite.testAutomaticSpeakersRetainManualPeople()
         suite.testDictionaryCorrectionDoesNotHideInitialSpeakerChanges()
         print("22 core checks passed")
+        try await SearchTests.run()
     }
     func testDiarizationRespectsManualSpeakerAndTextEdits() {
         var locked = Segment(start: 0, end: 2, text: "Mein Name", speakerID: "person")

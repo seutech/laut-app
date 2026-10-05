@@ -89,10 +89,9 @@ def execute(request):
     os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
     os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
     if operation == "download":
-        from huggingface_hub import snapshot_download
+        from model_download import download
         with contextlib.redirect_stdout(sys.stderr):
-            path = snapshot_download(request["modelID"], cache_dir=request["cache"])
-        return {"path": path}
+            return download(request)
 
     os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ["TRANSFORMERS_OFFLINE"] = "1"

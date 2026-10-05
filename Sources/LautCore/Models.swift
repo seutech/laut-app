@@ -105,6 +105,9 @@ public struct AppSettings: Codable, Sendable {
     public var diarizationInstalled: Bool = false
     // Optional storage keeps settings written by older versions decodable; missing means enabled.
     public var automaticSpeakerDetection: Bool?
+    public var searchMode: SearchMode?
+    public var embeddingModel: EmbeddingModel?
+    public var embeddingPaths: [String: String]?
     public var speakerDetectionEnabled: Bool {
         get { automaticSpeakerDetection ?? true }
         set { automaticSpeakerDetection = newValue }

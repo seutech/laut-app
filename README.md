@@ -20,6 +20,9 @@ Laut is a native SwiftUI app for Apple Silicon. Import a recording, transcribe i
 - Editable transcripts, original transcript retention, searchable local history and quick notes. Up to 30 document edits can be undone/redone, including speaker corrections and segment splits, even after restarting.
 - A default reading view groups neighboring segments into longer paragraphs per speaker, including existing transcripts, without changing their stored edits or history. Switch to **Bearbeiten** for corrections, manual speaker assignments and splits.
 - A locally generated, cached waveform supports click/drag seeking and up to 16× zoom. Click a word in the reading view to seek to its timestamp. Edited text and models without word timestamps fall back to the original segment start. Previous/next segment, five-second jumps, playback speed, transcript/speaker search and playback highlighting remain available.
+- Library search with local SQLite FTS5, optional multilingual E5 semantic retrieval and hybrid rank fusion. Filter by recording, date or speaker; snippets distinguish keyword/semantic hits and link transcript results to the source segment's audio timestamp. Notes and refined text open in their respective tabs.
+- A model manager separates speech, speaker, text and search models. Hugging Face downloads show byte progress, resume cached partial files, pin one revision per download and check file sizes/LFS SHA-256 values. External model folders are detached rather than deleted; deleting a managed download requires confirmation. Phonon and FluidAudio downloads retain their provider-specific preparation paths and do not expose byte progress.
+- Optional local text templates (summary, minutes, tasks, email) and experimental answers grounded in up to eight library search results with clickable source buttons. These need an installed MLX-LM text model; answer quality has not yet been validated end to end.
 - Personal vocabulary: Phonon/Qwen hotwords and explicit spelling replacements.
 - Optional local MLX-LM text editing with custom instructions; results remain separate from the original.
 - Microphone recording and meeting recording with microphone + system audio. Transcription runs **after stopping**; live partial meeting transcripts are not implemented yet.
@@ -60,8 +63,21 @@ The local build is ad-hoc signed. It is not notarized for distribution. The runt
 
 An arbitrary `.onnx`, `.bin` or `.gguf` file is not interchangeable with these backends. Local imports must be compatible model directories. Downloads are separate from inference; a missing model produces an error rather than a hidden download.
 
+## Library search
+
+Open **Suche** or type in the sidebar. **Volltext** requires no embedding model or running Python worker. It uses accent-insensitive prefix matching and requires all entered words; punctuation is treated as a separator, not SQL/FTS syntax. This is not an exact-phrase/operator query language.
+
+In **Modelle → Suche**, explicitly download Multilingual E5 Small (about 495 MB including tokenizer) or Base (about 1.1 GB). Choose **Bedeutung** or **Hybrid** in Search. Small is the tested starting point for an M1. A completed model already in Laut's cache is discovered without downloading. The first index/model load takes time; keyword hits stay available during preparation. Only changed sections need new embeddings. Titles remain searchable as metadata but do not get standalone semantic vectors. New model snapshots use separate vector namespaces; interrupted indexing resumes from completed batches, and incomplete semantic results are not presented as a complete index.
+
+Embedding inference uses a separate network-blocked worker, CPU execution with two Torch threads, bounded batches and normalized E5 vectors. It pauses during recording/transcription/other model operations and unloads after 45 seconds of inactivity or when switching to full-text search. Searches query the existing index without rebuilding it on every keystroke. Semantic similarity indicates relevance, not factual correctness or a calibrated confidence percentage. This first implementation scans locally stored vectors; very large libraries still need performance evaluation.
+
+Text templates use the selected template's instructions. **Eigene Anweisungen** uses your settings unchanged. The experimental answer button gives the local LLM only the first eight current search hits; it cannot inspect the entire library at once. It asks for numbered citations, and the provided sources can be opened independently. Verify generated assertions against those sources. Long text processing retains the existing 24,000-character limit.
+
+The feature design was informed by publicly described workflows in other transcription apps. No implementation code from Wisp, Detto, Humla or TypeWhisper was copied or vendored.
+
 ## Privacy and storage
 
+- The derived `search-v1.sqlite` index (and SQLite journal files) stores local text snippets and optional embeddings beside the library. It is not encrypted separately. Deletions/edits remove or invalidate indexed content; the original recording JSON remains authoritative.
 - Recordings, transcripts, vocabulary and settings live in `~/Library/Application Support/Laut/`.
 - Each recording retains local edit history and one previous valid JSON save. If the current file cannot be read, Laut tries that backup and reports the recovery. Existing damaged data is preserved for inspection. This is local recovery, not a separate backup of your audio/library. JSON exports omit edit history; deleting an entry removes its history and backup along with it.
 - Waveform peaks are cached locally beside each recording as `waveform-v1.json`, regenerated when the source changes, and removed when its audio is deleted. Waveform generation streams small audio buffers and keeps at most 60,000 peaks.
@@ -120,3 +136,11 @@ Please use synthetic/redacted fixtures in issues and pull requests. Do not uploa
 ## License
 
 Laut's own code is MIT-licensed. Dependencies and model weights retain their own licenses; see [THIRD_PARTY.md](THIRD_PARTY.md). Model weights are not distributed with this repository.
+
+For 0.1.6, core search checks cover FTS matching, filters, model-specific vector caches, hybrid ranking, reopen, stale-result rejection, deletion, Unicode chunking and safe model removal. Six Python checks cover the existing worker plus pinned download revisions, format filtering, progress and checksum rejection. An actual E5 Small test with networking denied matched all three synthetic German paraphrases. The Swift/Python/index integration retained the 42-second audio target, then successfully cancelled and restarted embedding inference. Two passages took about 6.9 seconds including a cold worker/model load; a warm query took about 0.025 seconds on this machine. These are tiny synthetic fixtures, not a large-library benchmark. E5 Base and generated library answers still need model-level validation; the new SwiftUI controls still need interactive testing.
+
+```sh
+swift run LautDiagnostics --search-checks --model /absolute/path/to/multilingual-e5-small
+.runtime/venv/bin/python -m unittest discover -s Tests/Python -p 'test_*.py'
+.runtime/venv/bin/python Tests/Python/check_embeddings.py /absolute/path/to/multilingual-e5-small
+```
