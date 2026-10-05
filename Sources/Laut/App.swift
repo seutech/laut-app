@@ -19,12 +19,15 @@ struct LautApp: App {
                 Button("Schnellnotiz") { store.newNote() }.keyboardShortcut("n")
             }
         }
-        MenuBarExtra("Laut", systemImage: store.isRecording ? "record.circle.fill" : "waveform") {
+        MenuBarExtra {
             Button("Öffnen") { NSApp.activate(ignoringOtherApps: true); NSApp.windows.first?.makeKeyAndOrderFront(nil) }
             Button("Dateien importieren …") { store.chooseFiles() }
             Button("Schnellnotiz") { store.newNote(); NSApp.activate(ignoringOtherApps: true) }
             Divider()
             Button("Beenden") { NSApp.terminate(nil) }.keyboardShortcut("q")
+        } label: {
+            if store.isRecording { Image(systemName: "record.circle.fill").accessibilityLabel("Laut nimmt auf") }
+            else { Image(nsImage: BrandAssets.menuBarMark).renderingMode(.template).accessibilityLabel("Laut") }
         }
     }
 }

@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="Resources/Branding/wordmark.png" alt="Laut" width="480">
+</p>
+
 # Laut
 
 **Local transcription for your Mac. Your audio stays yours.**
@@ -95,6 +99,7 @@ Before a stable release: real-world long-meeting tests, overlapping speakers, pe
 - `LautAudio`: streaming AVFoundation conversion, process isolation, model adapters, meeting capture and speaker analysis.
 - `Laut`: native SwiftUI library/editor/settings and global shortcuts.
 - `Resources/mlx_worker.py`: serial JSON-lines inference worker. One model is retained at a time; model loading uses local directories only. Fermion's internal adapter is pinned to its tested version.
+- `Resources/Branding`: selected speech-bubble logo, app icon and monochrome menu-bar mark. `scripts/build-icons.sh` packages the PNG artwork as a macOS `.icns` file using the system tools; the app build includes it automatically. Imagegen prompts are retained in `generation.json`.
 
 Please use synthetic/redacted fixtures in issues and pull requests. Do not upload private recordings to GitHub.
 

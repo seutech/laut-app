@@ -1,0 +1,21 @@
+{
+  "tool": "Built-in image_gen",
+  "selectedProposal": "02-sprachzeichen",
+  "assets": [
+    {
+      "name": "app-icon",
+      "transparent": true,
+      "prompt": "Use case: logo-brand asset extraction/edit. Edit the supplied selected Laut logo proposal into ONE production macOS app icon. Preserve the EXACT identity and geometry of the SMALL APP ICON at the lower right of the reference: deep petrol/teal rounded square containing the white softly rounded speech bubble with its little lower-left tail and exactly two horizontal teal transcript-line openings, upper line longer than lower. Square canvas, icon tile occupies about 82% of canvas width and height, centered, clear fully transparent margin on all sides, no shadow outside the tile. Bubble correctly centered optically in tile. Crisp truly flat solid colors, remove mottled paper texture, no gradient, no dimensional lighting. Only ONE app icon at high resolution. Remove all wordmarks, all other sample logos, and the off-white presentation-board background. No text. Preserve chosen design rather than inventing another speech bubble. Real alpha transparency outside rounded tile."
+    },
+    {
+      "name": "wordmark",
+      "transparent": false,
+      "prompt": "Use case: logo-brand asset extraction/edit. Extract the MAIN LARGE HORIZONTAL LOGO LOCKUP from supplied selected Laut proposal, faithfully preserving its specific speech-bubble geometry with lower-left tail, two horizontal line cutouts (upper longer), and the exact large wordmark 'Laut', title case L-a-u-t, including its humanist sans style and spacing. One horizontal lockup only centered on clean SOLID warm off-white (#FFFCF7) background, with modest even margins. Wide canvas roughly 3:1. Logo occupies about 85 percent of width and 65 percent of height. Petrol teal bubble (#075D61) and dark ink letters (#1D2C34). Flat solid colors, eliminate all mottled texture, no gradients or shadows. Remove bottom miniature samples and app icon, remove all other elements. This is the selected design being prepared as a GitHub README logo, not a new design exploration."
+    },
+    {
+      "name": "mark",
+      "transparent": true,
+      "prompt": "Use case: logo-brand asset extraction/edit. Extract ONLY the exact speech-bubble SYMBOL from the supplied chosen Laut logo proposal (the symbol to left of the main large wordmark). Preserve exact shape and proportions: a bold softly squared rounded speech bubble with short subtle lower-left tail and TWO horizontal rounded transcript-line openings, top opening longer, bottom shorter. Render symbol in a single solid black color. Both transcript-line openings and all surrounding background must be truly TRANSPARENT, not white. Square canvas, centered mark fills 88% of canvas, modest balanced transparent margin. Flat perfect silhouette, no texture, no shadow, no gradient, no wordmark, no colored square container, no other objects. It will be used as a monochrome macOS menu-bar template image. Preserve the selected design exactly."
+    }
+  ]
+}

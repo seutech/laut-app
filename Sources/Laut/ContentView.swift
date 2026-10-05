@@ -10,7 +10,7 @@ struct ContentView: View {
         NavigationSplitView {
             VStack(alignment: .leading, spacing: 20) {
                 HStack(spacing: 10) {
-                    Image(systemName: "waveform.circle.fill").font(.system(size: 32)).foregroundStyle(.teal)
+                    Image(nsImage: BrandAssets.appIcon).resizable().scaledToFit().frame(width: 38, height: 38).accessibilityHidden(true)
                     VStack(alignment: .leading) { Text("Laut").font(.title3.bold()); Text("Deine Stimme. Dein Mac.").font(.caption).foregroundStyle(.secondary) }
                 }.padding(.top, 16)
                 VStack(spacing: 6) {

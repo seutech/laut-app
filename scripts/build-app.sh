@@ -2,6 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 configuration="${1:-release}"
+bash scripts/build-icons.sh
 swift build -c "$configuration" --product Laut --jobs 4
 binary_dir="$(swift build -c "$configuration" --show-bin-path)"
 app_dir="$PWD/dist/Laut.app"
@@ -11,6 +12,7 @@ chmod -R u+w "$app_dir/Contents/Resources"
 cp "$binary_dir/Laut" "$app_dir/Contents/MacOS/Laut"
 cp Resources/Info.plist "$app_dir/Contents/Info.plist"
 cp Resources/mlx_worker.py "$app_dir/Contents/Resources/"
+cp .build/branding/Laut.icns .build/branding/LautIcon.png .build/branding/LautMark.png "$app_dir/Contents/Resources/"
 cp LICENSE THIRD_PARTY.md "$app_dir/Contents/Resources/"
 mkdir -p "$app_dir/Contents/Resources/Licenses"
 cp ThirdParty/*.txt "$app_dir/Contents/Resources/Licenses/"
