@@ -221,10 +221,25 @@ final class AppStore: ObservableObject {
         guard !busy, !isRecording, let item = recordings.first(where: { $0.id == id }), let source = library.audioURL(item) else { return }
         // Re-running creates a separate version so no correction or source result is overwritten.
         if !item.segments.isEmpty {
-            do {
-                var copy = try library.importFile(source); copy.title = item.title + " · neue Transkription"
-                try library.save(copy); recordings.insert(copy, at: 0); selected = copy.id; transcribe(copy.id)
-            } catch { self.error = error.localizedDescription }; return
+            busy = true; status = "Neue Version vorbereiten …"
+            task = Task {
+                var copy: Recording?
+                do {
+                    copy = try await importer.importFile(source, root: library.root, title: item.title + " · neue Transkription") { [weak self] fraction in
+                        Task { @MainActor in self?.status = "Neue Version kopieren · \(Int(fraction * 100)) %" }
+                    }
+                    try Task.checkCancellation()
+                    guard let copy else { throw LocalEngineError("Neue Version konnte nicht angelegt werden.") }
+                    recordings.insert(copy, at: 0); selected = copy.id
+                    busy = false; task = nil; transcribe(copy.id)
+                } catch {
+                    if let copy { try? library.delete(copy) }
+                    busy = false; task = nil
+                    status = Task.isCancelled ? "Abgebrochen. Das vorhandene Transkript bleibt erhalten." : "Neue Version konnte nicht angelegt werden."
+                    if !Task.isCancelled { self.error = error.localizedDescription }
+                }
+            }
+            return
         }
         let config = settings, terms = vocabulary
         busy = true; status = "Audio vorbereiten …"

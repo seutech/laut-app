@@ -19,7 +19,9 @@ struct TranscriptTests {
         try suite.testDamagedAndMissingPrimaryRecoverFromBackup()
         try suite.testFailedSavePreservesPreviousRecording()
         suite.testTranscriptNavigation()
-        print("14 core checks passed")
+        suite.testIndexedSpeakersMatchExhaustiveOverlapScoring()
+        suite.testLargeSpeakerTimeline()
+        print("16 core checks passed")
     }
     func testDiarizationRespectsManualSpeakerAndTextEdits() {
         var locked = Segment(start: 0, end: 2, text: "Mein Name", speakerID: "person")
@@ -31,6 +33,36 @@ struct TranscriptTests {
         XCTAssertEqual(result[1].text, "Korrigierter Fachbegriff")
         XCTAssertEqual(result[1].originalText, "alter Text")
         XCTAssertEqual(result[1].speakerID, "auto")
+    }
+    func testIndexedSpeakersMatchExhaustiveOverlapScoring() {
+        var turns: [SpeakerTurn] = (0..<300).map { i in
+            let start = Double((i * 37) % 400) / 4.0
+            let duration = Double(i % 13 + 1) / 4.0
+            return SpeakerTurn(speakerID: "person-\(i % 5)", start: start, end: start + duration)
+        }
+        turns += [SpeakerTurn(speakerID: "long", start: -5, end: 130), SpeakerTurn(speakerID: "tie-b", start: 150, end: 151), SpeakerTurn(speakerID: "tie-a", start: 150, end: 151)]
+        let segments = (0..<700).map { i in Segment(start: Double(i) / 4, end: Double(i) / 4 + 0.75, text: "Wort") }
+        let expected = segments.map { segment -> String? in
+            var scores: [String: Double] = [:]
+            for turn in turns {
+                let overlap = max(0, min(segment.end, turn.end) - max(segment.start, turn.start))
+                if overlap > 0 { scores[turn.speakerID, default: 0] += overlap }
+            }
+            return scores.sorted { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }.first?.key
+        }
+        XCTAssertEqual(TranscriptEditor.assign(turns, to: segments).map(\.speakerID), expected)
+        XCTAssertEqual(TranscriptEditor.assign(Array(turns.reversed()), to: segments).map(\.speakerID), expected)
+        XCTAssertEqual(TranscriptEditor.assign([], to: segments).map(\.speakerID), Array<String?>(repeating: nil, count: segments.count))
+    }
+    func testLargeSpeakerTimeline() {
+        let turns = (0..<10000).map { SpeakerTurn(speakerID: "person-\($0 % 4)", start: Double($0 * 2), end: Double($0 * 2 + 2)) }
+        let words = (0..<30000).map { i in Word(text: "W\(i)", start: Double(i) * 2 / 3, end: Double(i) * 2 / 3 + 0.3) }
+        let began = Date()
+        let result = TranscriptEditor.assign(turns, to: [Segment(start: 0, end: 20000, text: "Raw", words: words)])
+        XCTAssertEqual(result.flatMap(\.words), words)
+        XCTAssertEqual(result.count, 10000)
+        XCTAssertEqual(result.map(\.speakerID), turns.map { Optional($0.speakerID) })
+        print("30,000 words / 10,000 turns assigned in \(String(format: "%.3f", Date().timeIntervalSince(began))) seconds")
     }
     func testWordTimestampsSplitSpeakersWithoutLosingWords() {
         let words = [Word(text: "Hallo", start: 0, end: 1), Word(text: "Anna.", start: 1, end: 2), Word(text: "Guten", start: 3, end: 4), Word(text: "Tag!", start: 4, end: 5)]

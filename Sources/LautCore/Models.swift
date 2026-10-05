@@ -112,13 +112,33 @@ public struct AppSettings: Codable, Sendable {
 public enum TranscriptEditor {
     /// Manual edits always win over a fresh automatic analysis.
     public static func assign(_ turns: [SpeakerTurn], to segments: [Segment]) -> [Segment] {
-        segments.flatMap { segment -> [Segment] in
-            if segment.speakerLocked { return [segment] }
-            let best: (Double, Double) -> String? = { start, end in
-                let candidates = turns.map { ($0.speakerID, max(0, min(end, $0.end) - max(start, $0.start))) }
-                let scores = Dictionary(grouping: candidates, by: { $0.0 }).mapValues { $0.reduce(0) { $0 + $1.1 } }
-                return scores.filter { $0.value > 0 }.sorted { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }.first?.key
+        let ordered = turns.enumerated().filter { $0.element.start.isFinite && $0.element.end.isFinite && $0.element.end > $0.element.start }
+            .sorted { $0.element.start == $1.element.start ? $0.offset < $1.offset : $0.element.start < $1.element.start }.map(\.element)
+        var prefixEnds: [Double] = [], latest = -Double.infinity
+        for turn in ordered { latest = max(latest, turn.end); prefixEnds.append(latest) }
+        // Search the overlapping time range once per word, rather than every turn in a long meeting.
+        // Prefix maxima retain long/nested overlaps even when later turns have already ended.
+        func firstIndex(_ predicate: (Int) -> Bool) -> Int {
+            var low = 0, high = ordered.count
+            while low < high {
+                let middle = low + (high - low) / 2
+                if predicate(middle) { high = middle } else { low = middle + 1 }
             }
+            return low
+        }
+        func best(_ start: Double, _ end: Double) -> String? {
+            guard start.isFinite, end.isFinite, end > start else { return nil }
+            let lower = firstIndex { prefixEnds[$0] > start }, upper = firstIndex { ordered[$0].start >= end }
+            guard lower < upper else { return nil }
+            var scores: [String: Double] = [:]
+            for i in lower..<upper {
+                let turn = ordered[i], overlap = min(end, turn.end) - max(start, turn.start)
+                if overlap > 0 { scores[turn.speakerID, default: 0] += overlap }
+            }
+            return scores.sorted { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }.first?.key
+        }
+        return segments.flatMap { segment -> [Segment] in
+            if segment.speakerLocked { return [segment] }
             // Never overwrite edited text by reconstructing it from raw word timestamps.
             guard !segment.words.isEmpty, segment.text == segment.originalText else {
                 var copy = segment; copy.speakerID = best(segment.start, segment.end); return [copy]

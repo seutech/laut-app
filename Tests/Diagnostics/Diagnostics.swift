@@ -9,9 +9,11 @@ import LautAudio
         let analyzer = SpeakerAnalyzer()
         let models = root.appendingPathComponent(".runtime/models/diarization")
         if args.contains("--download-speakers") { try await analyzer.download(to: models); print("Speaker models ready"); return }
-        guard args.count >= 2 else { print("Usage: swift run LautDiagnostics <audio> [--diarize] OR --download-speakers"); return }
+        guard args.count >= 2 else { print("Usage: swift run LautDiagnostics <audio> [--workflow] [--engine phonon|parakeet|qwen] [--output directory] [--preload] [--print-transcript] OR --download-speakers"); return }
         if args.contains("--workflow") {
-            try await FileWorkflow.check(source: URL(fileURLWithPath: args[1]), project: root)
+            let settings = try DiagnosticConfiguration.settings(project: root, arguments: args)
+            let output = try DiagnosticConfiguration.value("--output", in: args).map { URL(fileURLWithPath: $0) }
+            try await FileWorkflow.check(source: URL(fileURLWithPath: args[1]), project: root, settings: settings, output: output)
             return
         }
         let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("laut-diagnostic-\(UUID().uuidString).wav")
@@ -22,10 +24,9 @@ import LautAudio
             let turns = try await analyzer.analyze(temporary, directory: models, count: nil) { current, total in print("Speaker windows: \(current)/\(total)") }
             print("Speaker IDs: \(Set(turns.map(\.speakerID)).count), segments: \(turns.count)")
         } else {
-            var settings = AppSettings()
-            settings.runtimeDirectory = root.appendingPathComponent(".runtime").path
-            settings.modelPaths["phonon"] = settings.runtimeDirectory + "/models/speech/FermionResearch__Phonon-2/model_phonon2_c4c_int6"
+            let settings = try DiagnosticConfiguration.settings(project: root, arguments: args)
             let engine = TranscriptionEngine(worker: root.appendingPathComponent("Resources/mlx_worker.py"))
+            defer { engine.warmWorker.stop() }
             if args.contains("--preload") {
                 let began = Date()
                 try await engine.preload(settings: settings)
@@ -35,7 +36,7 @@ import LautAudio
             for run in 1...2 {
                 let began = Date()
                 let result = try await engine.transcribe(audio: temporary, settings: settings, vocabulary: [])
-                print(result.text)
+                if args.contains("--print-transcript") { print(result.text) }
                 print("Run \(run), end-to-end ASR seconds: \(Date().timeIntervalSince(began)); editor segments: \(result.editorSegments().count)")
                 print("Load: \(result.load_seconds ?? -1); transcription: \(result.decode_seconds ?? -1)")
                 if args.contains("--preload") { guard result.load_seconds == 0 else { throw LocalEngineError("Prepared model was reloaded during transcription") } }

@@ -4,7 +4,7 @@ import LautCore
 
 public actor FileImporter {
     public init() {}
-    public func importFile(_ source: URL, root: URL, progress: @escaping @Sendable (Double) -> Void) async throws -> Recording {
+    public func importFile(_ source: URL, root: URL, title: String? = nil, progress: @escaping @Sendable (Double) -> Void) async throws -> Recording {
         guard source.isFileURL else { throw LocalEngineError("Bitte eine lokale Audio- oder Videodatei auswählen.") }
         let access = source.startAccessingSecurityScopedResource()
         defer { if access { source.stopAccessingSecurityScopedResource() } }
@@ -15,7 +15,7 @@ public actor FileImporter {
         let duration = try await asset.load(.duration).seconds
         try Task.checkCancellation()
         let library = try Library(root: root)
-        var recording = Recording(title: source.deletingPathExtension().lastPathComponent)
+        var recording = Recording(title: title ?? source.deletingPathExtension().lastPathComponent)
         recording.audioFilename = "source." + source.pathExtension.lowercased()
         recording.duration = duration.isFinite ? max(0, duration) : 0
         let folder = library.folder(recording.id)

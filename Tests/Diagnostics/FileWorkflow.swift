@@ -4,7 +4,8 @@ import LautAudio
 
 /// Uses a caller-supplied fixture in an isolated temporary library, never the user's library.
 enum FileWorkflow {
-    static func check(source: URL, project: URL) async throws {
+    static func check(source: URL, project: URL, settings: AppSettings, output: URL?) async throws {
+        if let output, FileManager.default.fileExists(atPath: output.path) { throw LocalEngineError("Output directory already exists; choose a new directory to preserve earlier results.") }
         let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("laut-workflow-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: temporary) }
         let library = try Library(root: temporary.appendingPathComponent("library"))
@@ -35,28 +36,32 @@ enum FileWorkflow {
 
         let wav = temporary.appendingPathComponent("converted.wav")
         let duration = try await AudioFiles.convert(copied, to: wav)
-        var settings = AppSettings()
-        settings.runtimeDirectory = project.appendingPathComponent(".runtime").path
-        settings.modelPaths["phonon"] = settings.runtimeDirectory + "/models/speech/FermionResearch__Phonon-2/model_phonon2_c4c_int6"
         let engine = TranscriptionEngine(worker: project.appendingPathComponent("Resources/mlx_worker.py"))
         defer { engine.warmWorker.stop() }
+        let preparationBegan = Date()
         try await engine.preload(settings: settings)
+        let preparationSeconds = Date().timeIntervalSince(preparationBegan)
         let began = Date()
         let result = try await engine.transcribe(audio: wav, settings: settings, vocabulary: [])
+        let transcriptionSeconds = Date().timeIntervalSince(began)
         record.segments = result.editorSegments(); record.originalSegments = record.segments
-        record.duration = duration; record.state = .complete
+        record.duration = duration; record.state = .complete; record.engine = settings.engine.label
         guard !record.segments.isEmpty else { throw LocalEngineError("Empty transcript") }
-        print("ASR: \(Date().timeIntervalSince(began)) seconds; \(record.segments.count) segments; last end \(record.segments.last!.end)")
+        print("\(settings.engine.label): preparation \(preparationSeconds) seconds; ASR \(transcriptionSeconds) seconds; \(record.segments.count) segments; last end \(record.segments.last!.end)")
         try library.save(record)
 
+        engine.warmWorker.stop()
         let analyzer = SpeakerAnalyzer()
+        let diarizationBegan = Date()
         let turns = try await analyzer.analyze(wav, directory: project.appendingPathComponent(".runtime/models/diarization"), count: nil) { _, _ in }
+        let diarizationSeconds = Date().timeIntervalSince(diarizationBegan)
         guard !turns.isEmpty else { throw LocalEngineError("No speaker turns") }
         record = RecordingEditor.edit(record, label: "Sprecheranalyse") {
             $0.segments = TranscriptEditor.assign(turns, to: $0.segments)
             $0.speakers = Set(turns.map(\.speakerID)).sorted().map { Speaker(id: $0, name: $0) }
         }
         print("Diarization: \(record.speakers.count) speakers; \(turns.count) turns")
+        let automaticRecording = record
         let automatic = record.segments
         record = RecordingEditor.edit(record, label: "Manuelle Korrektur") {
             $0.speakers.append(Speaker(id: "manual", name: "Testperson"))
@@ -72,6 +77,26 @@ enum FileWorkflow {
               let undone = RecordingEditor.undo(reopened), undone.segments == automatic,
               let redone = RecordingEditor.redo(undone), redone.segments == record.segments,
               !Exporter.srt(redone).isEmpty else { throw LocalEngineError("Save/reopen/undo/redo/export failed") }
+        let copy = try await importer.importFile(copied, root: library.root, title: record.title + " · neue Transkription") { _ in }
+        guard copy.id != record.id, copy.segments.isEmpty, copy.editHistory == nil, copy.state == .ready,
+              copy.title == record.title + " · neue Transkription", abs(copy.duration - record.duration) < 0.01,
+              FileManager.default.contentsEqual(atPath: copied.path, andPath: library.audioURL(copy)!.path),
+              try library.load().first(where: { $0.id == record.id })?.segments == record.segments else { throw LocalEngineError("New version did not preserve the existing transcript") }
+        if let output {
+            try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            var exported = automaticRecording; exported.audioFilename = nil; exported.editHistory = nil
+            let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try encoder.encode(exported).write(to: output.appendingPathComponent("transcript.json"), options: .atomic)
+            try Data(exported.plainText.utf8).write(to: output.appendingPathComponent("transcript.txt"), options: .atomic)
+            try Data(Exporter.srt(exported).utf8).write(to: output.appendingPathComponent("transcript.srt"), options: .atomic)
+            let report: [String: Any] = ["engine": settings.engine.rawValue, "audio_seconds": duration,
+                "preparation_seconds": preparationSeconds, "transcription_seconds": transcriptionSeconds,
+                "diarization_seconds": diarizationSeconds, "asr_seconds_per_audio_second": transcriptionSeconds / duration,
+                "timed_word_count": result.words?.count ?? 0, "last_segment_end": automatic.last?.end ?? 0,
+                "speaker_count": exported.speakers.count, "workflow_checks_passed": true]
+            try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("report.json"), options: .atomic)
+            print("Local transcripts and timing report saved. No transcript text printed to the log.")
+        }
         print("Workflow passed: import → ASR → speakers → manual correction → save/reopen → undo/redo → export")
     }
 }
