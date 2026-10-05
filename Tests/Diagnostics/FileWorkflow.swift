@@ -50,17 +50,16 @@ enum FileWorkflow {
         print("\(settings.engine.label): preparation \(preparationSeconds) seconds; ASR \(transcriptionSeconds) seconds; \(record.segments.count) segments; last end \(record.segments.last!.end)")
         try library.save(record)
 
-        engine.warmWorker.stop()
         let analyzer = SpeakerAnalyzer()
         let diarizationBegan = Date()
-        let turns = try await analyzer.analyze(wav, directory: project.appendingPathComponent(".runtime/models/diarization"), count: nil) { _, _ in }
+        let detected = try await analyzer.analyzeIfEnabled(wav, directory: project.appendingPathComponent(".runtime/models/diarization"), enabled: settings.speakerDetectionEnabled) { _, _ in }
         let diarizationSeconds = Date().timeIntervalSince(diarizationBegan)
-        guard !turns.isEmpty else { throw LocalEngineError("No speaker turns") }
-        record = RecordingEditor.edit(record, label: "Sprecheranalyse") {
-            $0.segments = TranscriptEditor.assign(turns, to: $0.segments)
-            $0.speakers = Set(turns.map(\.speakerID)).sorted().map { Speaker(id: $0, name: $0) }
+        let turns = detected ?? []
+        if detected != nil {
+            guard !turns.isEmpty else { throw LocalEngineError("No speaker turns") }
+            record = RecordingEditor.edit(record, label: "Sprecheranalyse") { TranscriptLayout.applyInitialSpeakers(turns, source: $0.originalSegments ?? $0.segments, vocabulary: [], to: &$0) }
         }
-        print("Diarization: \(record.speakers.count) speakers; \(turns.count) turns")
+        print("Diarization enabled: \(settings.speakerDetectionEnabled); \(record.speakers.count) speakers; \(turns.count) turns; reading paragraphs: \(TranscriptLayout.paragraphs(record.segments).count)")
         let automaticRecording = record
         let automatic = record.segments
         record = RecordingEditor.edit(record, label: "Manuelle Korrektur") {
@@ -93,7 +92,7 @@ enum FileWorkflow {
                 "preparation_seconds": preparationSeconds, "transcription_seconds": transcriptionSeconds,
                 "diarization_seconds": diarizationSeconds, "asr_seconds_per_audio_second": transcriptionSeconds / duration,
                 "timed_word_count": result.words?.count ?? 0, "last_segment_end": automatic.last?.end ?? 0,
-                "speaker_count": exported.speakers.count, "workflow_checks_passed": true]
+                "speaker_count": exported.speakers.count, "speakers_enabled": settings.speakerDetectionEnabled, "reading_paragraphs": TranscriptLayout.paragraphs(exported.segments).count, "workflow_checks_passed": true]
             try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("report.json"), options: .atomic)
             print("Local transcripts and timing report saved. No transcript text printed to the log.")
         }

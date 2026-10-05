@@ -12,6 +12,7 @@ enum DiagnosticConfiguration {
         let raw = try value("--engine", in: arguments) ?? "phonon"
         guard let kind = EngineKind(rawValue: raw) else { throw LocalEngineError("Unknown engine: \(raw). Choose phonon, parakeet or qwen.") }
         var settings = AppSettings(); settings.engine = kind
+        settings.speakerDetectionEnabled = !arguments.contains("--no-speakers")
         settings.runtimeDirectory = project.appendingPathComponent(".runtime").path
         let path: String
         if let supplied = try value("--model", in: arguments) { path = supplied }

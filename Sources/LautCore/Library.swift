@@ -57,7 +57,7 @@ public final class Library: @unchecked Sendable {
     public func audioURL(_ recording: Recording) -> URL? { recording.audioFilename.map { folder(recording.id).appendingPathComponent($0) } }
     public func delete(_ recording: Recording) throws { try FileManager.default.removeItem(at: folder(recording.id)) }
     public func deleteAudio(_ recording: inout Recording) throws {
-        for filename in [recording.audioFilename, recording.secondaryAudioFilename].compactMap({ $0 }) {
+        for filename in [recording.audioFilename, recording.secondaryAudioFilename, "waveform-v1.json"].compactMap({ $0 }) {
             let url = folder(recording.id).appendingPathComponent(filename)
             if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
         }

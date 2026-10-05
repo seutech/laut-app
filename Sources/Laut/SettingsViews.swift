@@ -32,7 +32,7 @@ struct ModelsView: View {
                 GroupBox {
                     VStack(alignment: .leading, spacing: 12) {
                         Text("Sprechererkennung").font(.title3.bold())
-                        Text("FluidAudio · lokale Core ML-Modelle. Nachträgliche Analyse, unabhängig vom Transkriptionsmodell. Der erste Download und die Modellvorbereitung können einige Minuten dauern.").foregroundStyle(.secondary)
+                        Text("FluidAudio · lokale Core ML-Modelle. Standardmäßig direkt nach der Transkription; auch nachträglich möglich. Der erste Download und die Modellvorbereitung können einige Minuten dauern.").foregroundStyle(.secondary)
                         Button(store.settings.diarizationInstalled ? "Modelle erneut vorbereiten" : "Sprechermodelle herunterladen") { store.downloadSpeakers() }
                     }.padding(10).frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -84,6 +84,12 @@ struct PreferencesView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 Text("Laut nach deinen Regeln.").font(.largeTitle.bold())
+                GroupBox("Transkription") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Toggle("Sprecher automatisch erkennen", isOn: Binding(get: { store.settings.speakerDetectionEnabled }, set: { store.settings.speakerDetectionEnabled = $0; store.saveSettings() }))
+                        Text("Standardmäßig werden Sprecher direkt nach der Transkription erkannt. Ausschalten spart die zusätzliche Analyse. Das Transkript wird vorher gespeichert; fehlende Sprechermodelle werden nicht automatisch heruntergeladen.").font(.caption).foregroundStyle(.secondary)
+                    }.padding(12)
+                }
                 GroupBox("Sprache & Anweisungen") {
                     VStack(alignment: .leading, spacing: 14) {
                         Picker("Bevorzugte Sprache", selection: $store.settings.language) { Text("Deutsch").tag("de"); Text("English").tag("en"); Text("Automatisch").tag("auto") }.frame(width: 320)

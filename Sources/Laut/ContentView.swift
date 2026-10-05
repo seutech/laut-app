@@ -129,41 +129,42 @@ struct RecordingView: View {
     @State private var transcriptSearch = ""
     @State private var followPlayback = true
     @State private var jumpTime = ""
+    @State private var editingTranscript = false
     @FocusState private var focusedSegment: UUID?
     var activeSegmentID: UUID? { store.playbackIsLoaded(record.id) ? TranscriptNavigation.activeSegment(at: store.playerTime, in: record.segments) : nil }
     var visibleSegments: [Segment] { transcriptSearch.isEmpty ? record.segments : record.segments.filter { ($0.text + " " + record.speakerName($0.speakerID)).localizedCaseInsensitiveContains(transcriptSearch) } }
+    var visibleParagraphs: [TranscriptParagraph] {
+        TranscriptLayout.paragraphs(record.segments).filter { transcriptSearch.isEmpty || ($0.text + " " + record.speakerName($0.speakerID)).localizedCaseInsensitiveContains(transcriptSearch) }
+    }
+    private var timingSummary: String {
+        let values: [(String, Double?)] = [("Gesamt", record.processingSeconds), ("Transkription", record.transcriptionSeconds), ("Modellladen", record.modelLoadSeconds), ("Sprecher", record.diarizationSeconds), ("Audio", record.audioPreparationSeconds)]
+        return values.compactMap { label, seconds in seconds.map { "\(label): \(String(format: "%.2f", $0)) s" } }.joined(separator: " · ")
+    }
     func binding<T>(_ key: WritableKeyPath<Recording, T>) -> Binding<T> {
         Binding(get: { store.recordings.first { $0.id == record.id }?[keyPath: key] ?? record[keyPath: key] }, set: { value in store.edit(record.id, label: "Text bearbeiten", key: String(describing: key)) { $0[keyPath: key] = value } })
     }
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 8) {
                     TextField("Titel", text: binding(\.title)).textFieldStyle(.plain).font(.title.bold())
                     Text(record.createdAt.formatted(date: .long, time: .shortened) + (record.duration > 0 ? "  ·  " + Exporter.timestamp(record.duration) : "") + (record.engine.isEmpty ? "" : "  ·  " + record.engine)).font(.caption).foregroundStyle(.secondary)
-                    if let total = record.processingSeconds {
-                        Text("Gesamt: \(String(format: "%.2f", total)) s" +
-                             (record.transcriptionSeconds.map { " · Transkription: \(String(format: "%.2f", $0)) s" } ?? "") +
-                             (record.modelLoadSeconds.map { " · Modellladen: \(String(format: "%.2f", $0)) s" } ?? "") +
-                             (record.audioPreparationSeconds.map { " · Audio: \(String(format: "%.2f", $0)) s" } ?? ""))
+                    if record.processingSeconds != nil {
+                        Text(timingSummary)
                             .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                     }
                 }
                 Spacer()
+                Button { store.undoEdit() } label: { Image(systemName: "arrow.uturn.backward") }
+                    .disabled(store.busy || store.undoLabel == nil).help("Rückgängig: " + (store.undoLabel ?? "Keine Änderung")).accessibilityLabel("Rückgängig")
+                Button { store.redoEdit() } label: { Image(systemName: "arrow.uturn.forward") }
+                    .disabled(store.busy || store.redoLabel == nil).help("Wiederherstellen: " + (store.redoLabel ?? "Keine Änderung")).accessibilityLabel("Wiederherstellen")
                 Menu {
                     ForEach(["txt", "md", "srt", "json"], id: \.self) { format in Button(format.uppercased()) { store.export(record, format: format) } }
                     Divider()
                     Button("Nur Audiodateien löschen …", role: .destructive) { confirmAudioDelete = true }.disabled(record.audioFilename == nil || store.busy)
                     Button("Eintrag löschen …", role: .destructive) { confirmDelete = true }.disabled(store.busy)
                 } label: { Label("Export & mehr", systemImage: "square.and.arrow.up") }
-            }
-            HStack(spacing: 12) {
-                Button { store.undoEdit() } label: { Label("Rückgängig", systemImage: "arrow.uturn.backward") }
-                    .disabled(store.busy || store.undoLabel == nil).help(store.undoLabel ?? "Keine Änderung zurückzunehmen")
-                Button { store.redoEdit() } label: { Label("Wiederherstellen", systemImage: "arrow.uturn.forward") }
-                    .disabled(store.busy || store.redoLabel == nil).help(store.redoLabel ?? "Keine Änderung wiederherzustellen")
-                Text("Bis zu 30 Änderungen · auch nach Neustart").font(.caption2).foregroundStyle(.secondary)
-                Spacer()
             }
             if record.kind != .note {
                 HStack {
@@ -172,8 +173,17 @@ struct RecordingView: View {
                     if record.segments.isEmpty { Button("Alle offenen Dateien") { store.transcribeAll() }.disabled(store.busy || store.isRecording) }
                     Spacer()
                 }
+                HStack {
+                    Toggle("Sprecher automatisch erkennen", isOn: Binding(get: { store.settings.speakerDetectionEnabled }, set: { store.settings.speakerDetectionEnabled = $0; store.saveSettings() }))
+                        .toggleStyle(.switch).controlSize(.small).disabled(store.busy || store.isRecording)
+                    Text(store.settings.speakerDetectionEnabled ? "Direkt nach der Transkription" : "Schneller ohne Sprecheranalyse").font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                }
                 if record.audioFilename != nil {
                     VStack(spacing: 12) {
+                        if let audio = store.library.audioURL(record) {
+                            WaveformView(source: audio, cache: store.library.folder(record.id).appendingPathComponent("waveform-v1.json"), position: store.playerTime) { store.seek(record, to: $0) }
+                        }
                         HStack(spacing: 12) {
                             Button { store.jumpSegment(record, forward: false) } label: { Image(systemName: "backward.end") }.help("Vorheriger Abschnitt")
                             Button { store.skip(record, by: -5) } label: { Image(systemName: "gobackward.5") }.help("5 Sekunden zurück")
@@ -211,7 +221,7 @@ struct RecordingView: View {
                 default: transcript
                 }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
-        }.padding(28)
+        }.padding(24)
         .onAppear { if record.kind == .note { tab = 2 } }
         .sheet(item: $splitSegment) { segment in SplitView(segment: segment) { pieces in
             store.edit(record.id, label: "Abschnitt teilen") { item in if let index = item.segments.firstIndex(where: { $0.id == segment.id }) { item.segments.replaceSubrange(index...index, with: pieces) } }
@@ -223,7 +233,8 @@ struct RecordingView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 TextField("Im Transkript oder nach Sprechern suchen …", text: $transcriptSearch).textFieldStyle(.roundedBorder)
-                if !transcriptSearch.isEmpty { Text("\(visibleSegments.count) Treffer").font(.caption); Button("Leeren") { transcriptSearch = "" } }
+                if !transcriptSearch.isEmpty { Text("\(editingTranscript ? visibleSegments.count : visibleParagraphs.count) Treffer").font(.caption); Button("Leeren") { transcriptSearch = "" } }
+                Picker("Darstellung", selection: $editingTranscript) { Text("Lesen").tag(false); Text("Bearbeiten").tag(true) }.pickerStyle(.segmented).frame(width: 190)
             }
             ScrollViewReader { proxy in
                 ScrollView {
@@ -231,33 +242,40 @@ struct RecordingView: View {
                         ContentUnavailableView("Bereit für dein Transkript", systemImage: "text.alignleft", description: Text("Wähle ein installiertes Modell und starte die lokale Transkription."))
                     }
                     LazyVStack(alignment: .leading, spacing: 16) {
-                        ForEach(visibleSegments) { segment in
-                            VStack(alignment: .leading, spacing: 9) {
-                                HStack {
-                                    Button(Exporter.timestamp(segment.start)) { store.play(record, at: segment.start) }.font(.caption.monospacedDigit()).buttonStyle(.plain).foregroundStyle(.teal)
-                                    Picker("Sprecher", selection: Binding(get: { segment.speakerID ?? "" }, set: { value in store.edit(record.id, label: "Sprecher zuordnen") { item in if let i = item.segments.firstIndex(where: { $0.id == segment.id }) { item.segments[i].speakerID = value.isEmpty ? nil : value; item.segments[i].speakerLocked = true } } })) {
-                                        Text("Unzugeordnet").tag("")
-                                        ForEach(record.speakers) { Text($0.name).tag($0.id) }
-                                    }.labelsHidden().fixedSize().disabled(store.busy)
-                                    if segment.speakerLocked { Image(systemName: "lock.fill").font(.caption2).foregroundStyle(.secondary).help("Manuelle Zuordnung bleibt bei neuer Analyse erhalten") }
-                                    Spacer()
-                                    Menu {
-                                        Button("Abschnitt teilen …") { splitSegment = segment }.disabled(segment.text.count < 2)
-                                        Button("Mit nächstem Abschnitt verbinden") { mergeNext(segment) }
-                                        Button("Automatische Sprecherzuordnung wieder erlauben") { store.edit(record.id, label: "Sprecherzuordnung entsperren") { item in if let i = item.segments.firstIndex(where: { $0.id == segment.id }) { item.segments[i].speakerLocked = false } } }
-                                    } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize().disabled(store.busy)
-                                }
-                                TextField("Text", text: Binding(get: { segment.text }, set: { text in store.edit(record.id, label: "Text korrigieren", key: "segment-" + segment.id.uuidString) { item in if let i = item.segments.firstIndex(where: { $0.id == segment.id }) { item.segments[i].text = text } } }), axis: .vertical)
-                                    .textFieldStyle(.plain).font(.system(size: 15)).lineSpacing(5).disabled(store.busy)
-                                    .focused($focusedSegment, equals: segment.id)
-                                if segment.text != segment.originalText { Text("Bearbeitet").font(.caption2).foregroundStyle(.secondary).help("Original: " + segment.originalText) }
-                            }.padding(16).background(activeSegmentID == segment.id ? Color.teal.opacity(0.12) : Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12)).id(segment.id)
+                        if !editingTranscript {
+                            ForEach(visibleParagraphs) { paragraph in
+                                TranscriptReadingView(paragraph: paragraph, speaker: record.speakers.isEmpty ? "" : record.speakerName(paragraph.speakerID), active: paragraph.segments.contains(where: { $0.id == activeSegmentID }), canSeek: record.audioFilename != nil) { store.seek(record, to: $0) }.id(paragraph.id)
+                            }
+                        } else {
+                            ForEach(visibleSegments) { segment in
+                                VStack(alignment: .leading, spacing: 9) {
+                                    HStack {
+                                        Button(Exporter.timestamp(segment.start)) { store.play(record, at: segment.start) }.font(.caption.monospacedDigit()).buttonStyle(.plain).foregroundStyle(.teal)
+                                        Picker("Sprecher", selection: Binding(get: { segment.speakerID ?? "" }, set: { value in store.edit(record.id, label: "Sprecher zuordnen") { item in if let i = item.segments.firstIndex(where: { $0.id == segment.id }) { item.segments[i].speakerID = value.isEmpty ? nil : value; item.segments[i].speakerLocked = true } } })) {
+                                            Text("Unzugeordnet").tag("")
+                                            ForEach(record.speakers) { Text($0.name).tag($0.id) }
+                                        }.labelsHidden().fixedSize().disabled(store.busy)
+                                        if segment.speakerLocked { Image(systemName: "lock.fill").font(.caption2).foregroundStyle(.secondary).help("Manuelle Zuordnung bleibt bei neuer Analyse erhalten") }
+                                        Spacer()
+                                        Menu {
+                                            Button("Abschnitt teilen …") { splitSegment = segment }.disabled(segment.text.count < 2)
+                                            Button("Mit nächstem Abschnitt verbinden") { mergeNext(segment) }
+                                            Button("Automatische Sprecherzuordnung wieder erlauben") { store.edit(record.id, label: "Sprecherzuordnung entsperren") { item in if let i = item.segments.firstIndex(where: { $0.id == segment.id }) { item.segments[i].speakerLocked = false } } }
+                                        } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize().disabled(store.busy)
+                                    }
+                                    TextField("Text", text: Binding(get: { segment.text }, set: { text in store.edit(record.id, label: "Text korrigieren", key: "segment-" + segment.id.uuidString) { item in if let i = item.segments.firstIndex(where: { $0.id == segment.id }) { item.segments[i].text = text } } }), axis: .vertical)
+                                        .textFieldStyle(.plain).font(.system(size: 15)).lineSpacing(5).disabled(store.busy)
+                                        .focused($focusedSegment, equals: segment.id)
+                                    if segment.text != segment.originalText { Text("Bearbeitet").font(.caption2).foregroundStyle(.secondary).help("Original: " + segment.originalText) }
+                                }.padding(16).background(activeSegmentID == segment.id ? Color.teal.opacity(0.12) : Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12)).id(segment.id)
+                            }
                         }
                     }
                 }
                 .onChange(of: activeSegmentID) { _, id in
-                    if followPlayback, store.playing, focusedSegment == nil, let id, visibleSegments.contains(where: { $0.id == id }) {
-                        withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(id, anchor: .center) }
+                    if followPlayback, store.playing, focusedSegment == nil, let id {
+                        let target = editingTranscript ? visibleSegments.first(where: { $0.id == id })?.id : visibleParagraphs.first(where: { $0.segments.contains(where: { $0.id == id }) })?.id
+                        if let target { withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(target, anchor: .center) } }
                     }
                 }
             }

@@ -21,7 +21,13 @@ struct TranscriptTests {
         suite.testTranscriptNavigation()
         suite.testIndexedSpeakersMatchExhaustiveOverlapScoring()
         suite.testLargeSpeakerTimeline()
-        print("16 core checks passed")
+        try suite.testSpeakerDefaultAndSettingsMigration()
+        suite.testReadingParagraphsPreserveBoundariesAndIDs()
+        suite.testWordClicksUseUTF16AndRespectEdits()
+        suite.testWaveformSeekingBounds()
+        suite.testAutomaticSpeakersRetainManualPeople()
+        suite.testDictionaryCorrectionDoesNotHideInitialSpeakerChanges()
+        print("22 core checks passed")
     }
     func testDiarizationRespectsManualSpeakerAndTextEdits() {
         var locked = Segment(start: 0, end: 2, text: "Mein Name", speakerID: "person")
@@ -33,6 +39,69 @@ struct TranscriptTests {
         XCTAssertEqual(result[1].text, "Korrigierter Fachbegriff")
         XCTAssertEqual(result[1].originalText, "alter Text")
         XCTAssertEqual(result[1].speakerID, "auto")
+    }
+    func testSpeakerDefaultAndSettingsMigration() throws {
+        let defaults = AppSettings()
+        XCTAssertTrue(defaults.speakerDetectionEnabled)
+        let encoder = JSONEncoder(), decoder = JSONDecoder()
+        var old = try JSONSerialization.jsonObject(with: encoder.encode(defaults)) as! [String: Any]
+        old.removeValue(forKey: "automaticSpeakerDetection")
+        var migrated = try decoder.decode(AppSettings.self, from: JSONSerialization.data(withJSONObject: old))
+        XCTAssertTrue(migrated.speakerDetectionEnabled)
+        migrated.speakerDetectionEnabled = false
+        XCTAssertTrue(try !decoder.decode(AppSettings.self, from: encoder.encode(migrated)).speakerDetectionEnabled)
+    }
+    func testReadingParagraphsPreserveBoundariesAndIDs() {
+        let a = Segment(start: 0, end: 3, text: "Erster Satz.", speakerID: "a")
+        let b = Segment(start: 3, end: 6, text: "Zweiter Satz.", speakerID: "a")
+        let c = Segment(start: 6, end: 9, text: "Antwort.", speakerID: "b")
+        let paragraphs = TranscriptLayout.paragraphs([a, b, c])
+        XCTAssertEqual(paragraphs.count, 2)
+        XCTAssertEqual(paragraphs[0].text, "Erster Satz. Zweiter Satz.")
+        XCTAssertEqual(paragraphs.flatMap(\.segments), [a, b, c])
+        var locked = b; locked.speakerLocked = true
+        XCTAssertEqual(TranscriptLayout.paragraphs([a, locked]).count, 2)
+        var distant = b; distant.start = 20; distant.end = 23
+        XCTAssertEqual(TranscriptLayout.paragraphs([a, distant]).count, 2)
+        XCTAssertTrue(TranscriptLayout.paragraphs([]).isEmpty)
+    }
+    func testWordClicksUseUTF16AndRespectEdits() {
+        let text = "Grüße 👋 Welt, Welt!"
+        let words = [Word(text: "Grüße", start: 1, end: 2), Word(text: "👋", start: 2, end: 3), Word(text: "Welt", start: 3, end: 4), Word(text: "Welt", start: 4, end: 5)]
+        var segment = Segment(start: 1, end: 5, text: text, words: words)
+        let ranges = TranscriptLayout.wordRanges(segment)
+        XCTAssertEqual(ranges.map(\.time), [1, 2, 3, 4])
+        XCTAssertEqual(ranges.map { (text as NSString).substring(with: $0.range) }, ["Grüße", "👋", "Welt", "Welt"])
+        XCTAssertEqual(ranges[1].range.length, 2)
+        segment.text = "Korrigierter Text"
+        XCTAssertTrue(TranscriptLayout.wordRanges(segment).isEmpty)
+    }
+    func testWaveformSeekingBounds() {
+        XCTAssertEqual(AudioTimeline.time(at: 0.25, start: 20, span: 40, duration: 100), 30)
+        XCTAssertEqual(AudioTimeline.time(at: -1, start: 20, span: 40, duration: 100), 20)
+        XCTAssertEqual(AudioTimeline.time(at: 2, start: 80, span: 40, duration: 100), 100)
+        XCTAssertEqual(AudioTimeline.time(at: .nan, start: 0, span: 10, duration: 10), 0)
+    }
+    func testAutomaticSpeakersRetainManualPeople() {
+        var record = Recording(title: "Gespräch")
+        record.speakers = [Speaker(id: "person", name: "Anna")]
+        var manual = Segment(start: 0, end: 1, text: "Manuell", speakerID: "person"); manual.speakerLocked = true
+        record.segments = [manual, Segment(start: 1, end: 2, text: "Automatisch")]
+        TranscriptLayout.applySpeakers([SpeakerTurn(speakerID: "person", start: 0, end: 2)], to: &record)
+        XCTAssertEqual(record.segments[0], manual)
+        XCTAssertTrue(record.segments[1].speakerID != "person")
+        XCTAssertEqual(record.speakerName("person"), "Anna")
+        XCTAssertEqual(record.speakers.count, 2)
+    }
+    func testDictionaryCorrectionDoesNotHideInitialSpeakerChanges() {
+        let raw = Segment(start: 0, end: 2, text: "Lauth Hallo", words: [Word(text: "Lauth", start: 0, end: 1), Word(text: "Hallo", start: 1, end: 2)])
+        var record = Recording(title: "Wörterbuch")
+        record.segments = [raw]; record.segments[0].text = "Laut Hallo"
+        record.originalSegments = [raw]
+        TranscriptLayout.applyInitialSpeakers([SpeakerTurn(speakerID: "a", start: 0, end: 1), SpeakerTurn(speakerID: "b", start: 1, end: 2)], source: [raw], vocabulary: [.init(term: "Laut", aliases: "Lauth")], to: &record)
+        XCTAssertEqual(record.segments.map(\.text), ["Laut", "Hallo"])
+        XCTAssertTrue(record.segments[0].speakerID != record.segments[1].speakerID)
+        XCTAssertEqual(record.originalSegments, [raw])
     }
     func testIndexedSpeakersMatchExhaustiveOverlapScoring() {
         var turns: [SpeakerTurn] = (0..<300).map { i in

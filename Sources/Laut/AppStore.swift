@@ -256,15 +256,36 @@ final class AppStore: ObservableObject {
                 try Task.checkCancellation()
                 preparedModelKey = [config.runtimeDirectory, config.engine.rawValue, config.modelPaths[config.engine.rawValue] ?? ""].joined(separator: "\n")
                 modelStatus = "\(config.engine.label) bereit"
-                var segments = result.editorSegments()
+                let originalSegments = result.editorSegments()
+                var segments = originalSegments
                 for i in segments.indices { segments[i].text = TranscriptEditor.applyVocabulary(segments[i].text, entries: terms) }
                 let saved = update(id) {
-                    $0.segments = segments; $0.originalSegments = result.editorSegments(); $0.duration = duration; $0.engine = config.engine.label
+                    $0.segments = segments; $0.originalSegments = originalSegments; $0.duration = duration; $0.engine = config.engine.label
                     $0.processingSeconds = Date().timeIntervalSince(start); $0.audioPreparationSeconds = preparationSeconds
                     $0.modelLoadSeconds = result.load_seconds; $0.transcriptionSeconds = result.decode_seconds; $0.state = .complete
                 }
                 guard saved else { throw LocalEngineError("Transkript konnte nicht gespeichert werden. Die Audiodatei bleibt erhalten.") }
-                status = "Transkription fertig · \(String(format: "%.1f", Date().timeIntervalSince(start))) s für \(Exporter.timestamp(duration)) Audio"
+                var speakerWarning: String?
+                if config.speakerDetectionEnabled && !segments.isEmpty {
+                    status = "Transkript gespeichert · Sprecher werden erkannt …"
+                    do {
+                        let speakerStart = Date()
+                        let directory = URL(fileURLWithPath: config.runtimeDirectory).appendingPathComponent("models/diarization")
+                        if let turns = try await analyzer.analyzeIfEnabled(temp, directory: directory, enabled: config.speakerDetectionEnabled, progress: { [weak self] current, total in
+                            Task { @MainActor in self?.status = "Sprecher erkennen · \(current)/\(total)" }
+                        }) {
+                            try Task.checkCancellation()
+                            guard edit(id, label: "Automatische Sprechererkennung", change: { TranscriptLayout.applyInitialSpeakers(turns, source: originalSegments, vocabulary: terms, to: &$0) }) else { throw LocalEngineError("Sprecherzuordnung konnte nicht gespeichert werden.") }
+                            update(id) { $0.diarizationSeconds = Date().timeIntervalSince(speakerStart) }
+                        }
+                    } catch {
+                        speakerWarning = Task.isCancelled ? "Sprechererkennung abgebrochen. Das Transkript bleibt erhalten." : "Transkript gespeichert, Sprechererkennung nicht abgeschlossen: \(error.localizedDescription)"
+                        update(id) { $0.error = speakerWarning; $0.state = .complete }
+                    }
+                }
+                update(id) { $0.processingSeconds = Date().timeIntervalSince(start) }
+                status = speakerWarning ?? "Transkription fertig · \(String(format: "%.1f", Date().timeIntervalSince(start))) s für \(Exporter.timestamp(duration)) Audio"
+                if Task.isCancelled { return }
                 if let target, let finished = recordings.first(where: { $0.id == id }) {
                     if !TextInsertion.insert(finished.plainText, into: target, anchor: anchor) { self.error = "Automatisches Einfügen war nicht möglich oder die Textposition hat sich geändert. Dein Diktat ist in Laut gespeichert." }
                 }
@@ -280,28 +301,21 @@ final class AppStore: ObservableObject {
         guard !busy, let item = recordings.first(where: { $0.id == id }), let source = library.audioURL(item) else { return }
         guard settings.diarizationInstalled else { section = "models"; error = "Bitte das Modell für Sprechererkennung zuerst herunterladen."; return }
         busy = true; status = "Sprecheranalyse vorbereiten …"
-        preparedModelKey = nil; modelStatus = "Sprachmodell pausiert während Sprecheranalyse"
-        engine.warmWorker.stop()
         task = Task {
             let temp = library.folder(id).appendingPathComponent("speakers.wav")
-            defer { try? FileManager.default.removeItem(at: temp); busy = false; task = nil; prepareSelectedModel() }
+            defer { try? FileManager.default.removeItem(at: temp); busy = false; task = nil }
             do {
                 _ = try await AudioFiles.convert(source, to: temp)
+                let began = Date()
                 let turns = try await analyzer.analyze(temp, directory: modelDirectory, count: count) { [weak self] current, total in
                     Task { @MainActor in self?.status = "Sprecher analysieren · \(current)/\(total)" }
                 }
                 try Task.checkCancellation()
-                // Cluster IDs are arbitrary per run. Fresh IDs cannot steal manually named speakers.
-                let rawIDs = Array(Set(turns.map(\.speakerID))).sorted()
-                let speakers = rawIDs.enumerated().map { Speaker(name: "Sprecher \($0.offset + 1)") }
-                let mapping = Dictionary(uniqueKeysWithValues: zip(rawIDs, speakers.map(\.id)))
-                let mapped = turns.map { SpeakerTurn(speakerID: mapping[$0.speakerID]!, start: $0.start, end: $0.end) }
                 let saved = edit(id, label: "Sprecheranalyse") { record in
-                    record.segments = TranscriptEditor.assign(mapped, to: record.segments)
-                    let retained = Set(record.segments.compactMap(\.speakerID))
-                    record.speakers = (record.speakers + speakers).filter { retained.contains($0.id) }
+                    TranscriptLayout.applySpeakers(turns, to: &record)
                 }
                 guard saved else { throw LocalEngineError("Sprecherkorrekturen konnten nicht gespeichert werden.") }
+                update(id) { $0.diarizationSeconds = Date().timeIntervalSince(began); $0.error = nil }
                 status = "Sprecheranalyse fertig. Namen und Zuordnungen kannst du jetzt korrigieren."
             } catch { self.error = error.localizedDescription; status = "Sprecheranalyse nicht abgeschlossen" }
         }

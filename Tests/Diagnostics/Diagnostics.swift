@@ -6,6 +6,7 @@ import LautAudio
     static func main() async throws {
         let args = CommandLine.arguments
         let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        if args.contains("--audio-interface-checks") { try await AudioInterfaceChecks.run(); return }
         let analyzer = SpeakerAnalyzer()
         let models = root.appendingPathComponent(".runtime/models/diarization")
         if args.contains("--download-speakers") { try await analyzer.download(to: models); print("Speaker models ready"); return }

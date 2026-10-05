@@ -58,6 +58,7 @@ public struct Recording: Identifiable, Codable, Sendable {
     public var modelLoadSeconds: Double?
     public var transcriptionSeconds: Double?
     public var audioPreparationSeconds: Double?
+    public var diarizationSeconds: Double?
     public var editHistory: EditHistory?
     public init(title: String, kind: DocumentKind = .file, audioFilename: String? = nil) {
         self.title = title; self.kind = kind; self.audioFilename = audioFilename
@@ -102,6 +103,12 @@ public struct AppSettings: Codable, Sendable {
     public var runtimeDirectory: String = ""
     public var language: String = "de"
     public var diarizationInstalled: Bool = false
+    // Optional storage keeps settings written by older versions decodable; missing means enabled.
+    public var automaticSpeakerDetection: Bool?
+    public var speakerDetectionEnabled: Bool {
+        get { automaticSpeakerDetection ?? true }
+        set { automaticSpeakerDetection = newValue }
+    }
     public var customInstructions: String = "Korrigiere Rechtschreibung und Zeichensetzung. Behalte Sprache, Bedeutung, Namen und Zahlen bei. Erfinde keine Inhalte. Gib nur den bearbeiteten Text zurück."
     public var llmModelPath: String = ""
     public var llmModelID: String = "mlx-community/Qwen3-1.7B-4bit"

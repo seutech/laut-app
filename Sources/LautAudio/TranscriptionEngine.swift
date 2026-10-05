@@ -17,7 +17,7 @@ public struct TranscriptResult: Decodable {
             var result: [Segment] = [], group: [Word] = []
             for word in words where word.start.isFinite && word.end.isFinite && word.end >= word.start {
                 if let first = group.first, let last = group.last,
-                   word.start - last.end > 1.2 || word.end - first.start > 18 || (group.count > 8 && ".!?".contains(last.text.last ?? " ")) {
+                   word.start - last.end > 3 || word.end - first.start > 75 || (group.count > 100 && ".!?".contains(last.text.last ?? " ")) {
                     result.append(Segment(start: first.start, end: last.end, text: TranscriptEditor.joinedWords(group), words: group)); group = []
                 }
                 group.append(word)

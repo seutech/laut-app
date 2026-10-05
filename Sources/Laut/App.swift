@@ -7,7 +7,7 @@ struct LautApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView().environmentObject(store)
-                .frame(minWidth: 1000, minHeight: 680)
+                .frame(minWidth: 1000, minHeight: 760)
         }
         .commands {
             CommandGroup(after: .undoRedo) {
