@@ -5,6 +5,8 @@ public struct TranscriptResult: Decodable {
     public var text: String
     public var duration_seconds: Double?
     public var wall_seconds: Double?
+    public var load_seconds: Double?
+    public var decode_seconds: Double?
     public var truncated: Bool?
     public var segments: [RawSegment]?
     public var words: [Word]?

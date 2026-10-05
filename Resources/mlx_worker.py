@@ -15,6 +15,7 @@ import time
 
 _cached_key = None
 _cached_model = None
+_warmed_key = None
 
 
 def value(obj, key, default=None):
@@ -22,12 +23,13 @@ def value(obj, key, default=None):
 
 
 def load_local(kind, path):
-    global _cached_key, _cached_model
+    global _cached_key, _cached_model, _warmed_key
     key = (kind, str(path))
     if _cached_key == key:
         return _cached_model
     _cached_model = None
     _cached_key = None
+    _warmed_key = None
     gc.collect()
     import mlx.core as mx
     mx.clear_cache()
@@ -46,6 +48,24 @@ def load_local(kind, path):
         model = load(path, model_type="parakeet" if kind == "parakeet" else "qwen3_asr", strict=True)
     _cached_key, _cached_model = key, model
     return model
+
+
+def warm_local(kind, path, model):
+    """Compile inference kernels before reporting ready. No microphone/user audio."""
+    global _warmed_key
+    key = (kind, str(path))
+    if _warmed_key == key:
+        return
+    import numpy as np
+    # Digital silence is skipped by Phonon's energy gate and never compiles kernels.
+    # A deterministic low-amplitude synthetic signal exercises the actual decoder.
+    probe = np.random.default_rng(0).normal(0, 0.02, 3 * 16000).astype(np.float32)
+    if kind == "phonon":
+        model.transcribe_array_detailed(probe)
+    else:
+        import mlx.core as mx
+        model.generate(mx.array(probe), max_tokens=32)
+    _warmed_key = key
 
 
 def parakeet_words(tokens):
@@ -82,9 +102,13 @@ def execute(request):
     began = time.perf_counter()
     with contextlib.redirect_stdout(sys.stderr):
         kind = "refine" if operation == "refine" else request.get("engine", "parakeet")
+        was_cached = _cached_key == (kind, str(model_path))
         model = load_local(kind, model_path)
+        load_seconds = 0.0 if was_cached else time.perf_counter() - began
         if operation == "preload":
-            return {"ready": True, "wall_seconds": time.perf_counter() - began}
+            warm_start = time.perf_counter()
+            warm_local(kind, model_path, model)
+            return {"ready": True, "load_seconds": load_seconds, "warmup_seconds": time.perf_counter() - warm_start, "wall_seconds": time.perf_counter() - began}
         if kind == "refine":
             from mlx_lm import stream_generate
             model, tokenizer = model
@@ -101,10 +125,11 @@ def execute(request):
         if kind == "phonon":
             if hasattr(model, "set_hotwords"):
                 model.set_hotwords(request.get("hotwords", [])[:25])
+            decode_start = time.perf_counter()
             output = model.transcribe_detailed(request["audio"])
             text, decode, duration = output.triple()
             return {"text": text, "segments": output.segments, "words": output.words if output.timed else [],
-                    "duration_seconds": duration, "decode_seconds": decode,
+                    "duration_seconds": duration, "decode_seconds": time.perf_counter() - decode_start, "load_seconds": load_seconds,
                     "wall_seconds": time.perf_counter() - began, "truncated": bool(output.truncated)}
 
         options = {"chunk_duration": 30.0}
@@ -115,7 +140,9 @@ def execute(request):
             if language:
                 options["language"] = language
             options["hotwords"] = request.get("hotwords", [])
+        decode_start = time.perf_counter()
         output = model.generate(request["audio"], **options)
+        decode_seconds = time.perf_counter() - decode_start
         import soundfile as sf
         duration = sf.info(request["audio"]).duration
         segments, words = [], []
@@ -132,7 +159,7 @@ def execute(request):
             segments = [{"start": 0.0, "end": duration, "text": text}]
         truncated = kind == "qwen" and value(output, "generation_tokens", 0) >= 8192
         return {"text": text, "segments": segments, "words": words, "duration_seconds": duration,
-                "wall_seconds": time.perf_counter() - began, "truncated": truncated}
+                "wall_seconds": time.perf_counter() - began, "load_seconds": load_seconds, "decode_seconds": decode_seconds, "truncated": truncated}
 
 
 def main():

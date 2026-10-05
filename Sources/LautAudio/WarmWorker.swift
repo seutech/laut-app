@@ -13,6 +13,7 @@ public final class WarmWorker: @unchecked Sendable {
     private var cancelled = false
     private var mustRestart = false
     public init() {}
+    public var isRunning: Bool { lock.withLock { process?.isRunning == true && !mustRestart } }
     deinit { lock.withLock { reset() } }
     public func stop() { lock.withLock { cancelled = true; mustRestart = true; if process?.isRunning == true { process?.terminate() } } }
     private func reset() {

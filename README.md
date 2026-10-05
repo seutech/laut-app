@@ -31,7 +31,9 @@ cd laut-app
 open dist/Laut.app
 ```
 
-In **Modelle**, download a speech model. Downloads connect to Hugging Face/GitHub as needed; no login is required. Choose **Gewähltes Modell vorladen** before dictation to avoid paying model startup latency on the first recording. Import a file and click **Transkribieren**. For speaker labels, install the speaker models, open the recording's **Sprecher** tab and run **Sprecher erkennen**.
+In **Modelle**, download a speech model. Downloads connect to Hugging Face/GitHub as needed; no login is required. Laut automatically loads the selected installed model at startup and after a model change, then warms its inference kernels using a short, generated test signal (never microphone or user audio). Wait for **Phonon-2 bereit** (or the selected model's name) before recording. Initial preparation can still take tens of seconds; it happens before the first dictation instead of after it. **Gewähltes Modell vorladen** retries preparation after cancellation or manual unloading. Import a file and click **Transkribieren**. For speaker labels, install the speaker models, open the recording's **Sprecher** tab and run **Sprecher erkennen**.
+
+New transcripts show total processing time, model loading, audio preparation and speech recognition separately. Older recordings retain their original total time; missing timing breakdowns are not estimated retroactively. Cancelling preparation or explicitly unloading the model prevents automatic retries until a new model is selected or preparation is requested manually.
 
 The local build is ad-hoc signed. It is not notarized for distribution. The runtime remains in this checkout's `.runtime` folder; moving the app does not bundle Python. If you move the checkout, select its new `.runtime` directory under **Einstellungen** and rebuild the virtual environment if needed. A self-contained installer is future work.
 
@@ -73,6 +75,8 @@ swift run LautDiagnostics /path/to/test-audio.wav --diarize
 The ASR diagnostic performs a cold and a warm run. Only synthetic test speech has been used in the initial smoke tests; no personal recordings are included. Initial M1 measurement: 11.09 seconds of German synthetic speech took 22.76 seconds with Phonon including the first load, then 0.27 seconds with the same model already loaded. Parakeet v3 transcribed that clip correctly in 13.58 seconds cold and 1.42 seconds warm while a build was running. These are smoke tests, not a controlled speed comparison, representative meeting benchmark or accuracy guarantee. Offline diarization separated a 46-second alternating two-voice synthetic clip into two speakers and four turns. Both ASR engines and diarization were exercised with networking denied by macOS; Qwen and text generation still need end-to-end validation.
 
 A separate synthetic six-minute file (362.59 seconds) produced 12 ASR chunks and 750 timed words in 27.79 seconds including loading. Its last word reached 362.53 seconds and the backend reported no truncation. This exercises chunking and end-of-file coverage, not realistic conversational accuracy.
+
+With startup preparation enabled, a three-second synthetic speech clip took 0.20 seconds on the first ASR request after readiness and 0.11 seconds on the second. Preparation itself took 24.95 seconds before recording; this cost has been moved to startup, not eliminated. Both requests reported zero model reload time. Reproduce with `swift run LautDiagnostics /path/to/test.wav --preload`. The warmup uses a generated non-silent signal because Phonon's silence gate otherwise skips inference.
 
 Before a stable release: real-world long-meeting tests, overlapping speakers, permission recovery, cancellation/device interruptions, cross-app caret handling, UI verification, English localization, a bundled runtime, signed/notarized releases, and an opt-in live transcript view.
 

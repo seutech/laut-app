@@ -10,8 +10,8 @@ struct ModelsView: View {
                 Text("Dein Mac. Deine Modelle.").font(.largeTitle.bold())
                 Text("Downloads stellen eine Verbindung zum jeweiligen Modellanbieter her. Die Verarbeitung danach läuft lokal. Audio und Texte werden nicht übertragen.").foregroundStyle(.secondary)
                 HStack {
-                    Button("Gewähltes Modell vorladen") { store.perform("Modell lokal vorladen …") { try await store.engine.preload(settings: store.settings) } }
-                    Button("Modell aus Speicher entladen") { store.engine.warmWorker.stop(); store.status = "Modell entladen" }
+                    Button("Gewähltes Modell vorladen") { store.prepareSelectedModel(force: true) }
+                    Button("Modell aus Speicher entladen") { store.unloadModel() }
                 }
                 ForEach(EngineKind.allCases) { engine in
                     GroupBox {

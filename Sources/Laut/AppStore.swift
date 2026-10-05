@@ -19,6 +19,10 @@ final class AppStore: ObservableObject {
     @Published var isRecording = false
     @Published var playerTime: Double = 0
     @Published var playing = false
+    @Published var modelStatus = "Modell nicht vorbereitet"
+    private var preparedModelKey: String?
+    private var observedModelKey: String?
+    private var automaticPreparation = true
     let library: Library
     let engine: TranscriptionEngine
     let analyzer = SpeakerAnalyzer()
@@ -78,11 +82,57 @@ final class AppStore: ObservableObject {
                 else { self?.refineSelection() }
             }
         }
+        observedModelKey = selectedModelKey
+        prepareSelectedModel()
+    }
+    private var selectedModelKey: String {
+        [settings.runtimeDirectory, settings.engine.rawValue, settings.modelPaths[settings.engine.rawValue] ?? ""].joined(separator: "\n")
+    }
+    var modelReady: Bool { preparedModelKey == selectedModelKey && engine.warmWorker.isRunning }
+    func prepareSelectedModel(force: Bool = false) {
+        if force { automaticPreparation = true }
+        guard automaticPreparation, !busy, !isRecording else { return }
+        if modelReady { return }
+        guard let path = settings.modelPaths[settings.engine.rawValue], FileManager.default.fileExists(atPath: path) else {
+            modelStatus = "Bitte ein Sprachmodell installieren"; return
+        }
+        let config = settings, key = selectedModelKey
+        busy = true; preparedModelKey = nil
+        modelStatus = "\(config.engine.label) wird geladen und aufgewärmt …"
+        status = "Modell vorbereiten · einmalig vor der ersten Aufnahme"
+        task = Task {
+            defer { busy = false; task = nil }
+            do {
+                let began = Date()
+                try await engine.preload(settings: config)
+                try Task.checkCancellation()
+                guard selectedModelKey == key else { modelStatus = "Modellwahl geändert · bitte vorladen"; return }
+                preparedModelKey = key
+                modelStatus = "\(config.engine.label) bereit"
+                status = "Modell in \(String(format: "%.1f", Date().timeIntervalSince(began))) s vorbereitet · bereit für Aufnahmen"
+            } catch {
+                automaticPreparation = false
+                modelStatus = "Modell nicht vorbereitet"
+                status = Task.isCancelled ? "Vorbereitung abgebrochen" : "Modellvorbereitung fehlgeschlagen"
+                if !Task.isCancelled { self.error = error.localizedDescription }
+            }
+        }
+    }
+    func unloadModel() {
+        guard !busy, !isRecording else { return }
+        automaticPreparation = false; preparedModelKey = nil
+        engine.warmWorker.stop(); modelStatus = "Modell entladen"; status = "Arbeitsspeicher freigegeben"
     }
     var current: Recording? { recordings.first { $0.id == selected } }
     var modelDirectory: URL { URL(fileURLWithPath: settings.runtimeDirectory).appendingPathComponent("models/diarization") }
     var filtered: [Recording] { recordings.filter { search.isEmpty || ($0.title + " " + $0.plainText + " " + $0.notes).localizedCaseInsensitiveContains(search) } }
-    func saveSettings() { do { try library.saveSettings(settings) } catch { self.error = error.localizedDescription } }
+    func saveSettings() {
+        do { try library.saveSettings(settings) } catch { self.error = error.localizedDescription }
+        if observedModelKey != selectedModelKey {
+            observedModelKey = selectedModelKey; preparedModelKey = nil; automaticPreparation = true
+            modelStatus = "Modell nicht vorbereitet"; prepareSelectedModel()
+        }
+    }
     func saveVocabulary() { do { try library.saveVocabulary(vocabulary) } catch { self.error = error.localizedDescription } }
     func update(_ id: UUID, _ edit: (inout Recording) -> Void) {
         guard let index = recordings.firstIndex(where: { $0.id == id }) else { return }
@@ -131,12 +181,19 @@ final class AppStore: ObservableObject {
             do {
                 let start = Date()
                 let duration = try await AudioFiles.convert(source, to: temp)
+                let preparationSeconds = Date().timeIntervalSince(start)
                 try Task.checkCancellation(); status = "\(config.engine.label) transkribiert lokal …"
                 let result = try await engine.transcribe(audio: temp, settings: config, vocabulary: terms)
                 try Task.checkCancellation()
+                preparedModelKey = [config.runtimeDirectory, config.engine.rawValue, config.modelPaths[config.engine.rawValue] ?? ""].joined(separator: "\n")
+                modelStatus = "\(config.engine.label) bereit"
                 var segments = result.editorSegments()
                 for i in segments.indices { segments[i].text = TranscriptEditor.applyVocabulary(segments[i].text, entries: terms) }
-                update(id) { $0.segments = segments; $0.originalSegments = result.editorSegments(); $0.duration = duration; $0.engine = config.engine.label; $0.processingSeconds = Date().timeIntervalSince(start); $0.state = .complete }
+                update(id) {
+                    $0.segments = segments; $0.originalSegments = result.editorSegments(); $0.duration = duration; $0.engine = config.engine.label
+                    $0.processingSeconds = Date().timeIntervalSince(start); $0.audioPreparationSeconds = preparationSeconds
+                    $0.modelLoadSeconds = result.load_seconds; $0.transcriptionSeconds = result.decode_seconds; $0.state = .complete
+                }
                 status = "Transkription fertig · \(String(format: "%.1f", Date().timeIntervalSince(start))) s für \(Exporter.timestamp(duration)) Audio"
                 if let target, let finished = recordings.first(where: { $0.id == id }) {
                     if !TextInsertion.insert(finished.plainText, into: target, anchor: anchor) { self.error = "Automatisches Einfügen war nicht möglich oder die Textposition hat sich geändert. Dein Diktat ist in Laut gespeichert." }
@@ -144,6 +201,7 @@ final class AppStore: ObservableObject {
                 if item.kind == .dictation && !config.keepDictationAudio { removeAudio(id) }
             } catch {
                 let message = Task.isCancelled ? "Abgebrochen. Die Quelldatei bleibt erhalten." : error.localizedDescription
+                if !engine.warmWorker.isRunning { preparedModelKey = nil; modelStatus = "Modell nicht vorbereitet" }
                 update(id) { $0.state = .failed; $0.error = message }; status = message
             }
         }
@@ -152,10 +210,11 @@ final class AppStore: ObservableObject {
         guard !busy, let item = recordings.first(where: { $0.id == id }), let source = library.audioURL(item) else { return }
         guard settings.diarizationInstalled else { section = "models"; error = "Bitte das Modell für Sprechererkennung zuerst herunterladen."; return }
         busy = true; status = "Sprecheranalyse vorbereiten …"
+        preparedModelKey = nil; modelStatus = "Sprachmodell pausiert während Sprecheranalyse"
         engine.warmWorker.stop()
         task = Task {
             let temp = library.folder(id).appendingPathComponent("speakers.wav")
-            defer { try? FileManager.default.removeItem(at: temp); busy = false; task = nil }
+            defer { try? FileManager.default.removeItem(at: temp); busy = false; task = nil; prepareSelectedModel() }
             do {
                 _ = try await AudioFiles.convert(source, to: temp)
                 let turns = try await analyzer.analyze(temp, directory: modelDirectory, count: count) { [weak self] current, total in
@@ -195,13 +254,17 @@ final class AppStore: ObservableObject {
     }
     func perform(_ message: String, operation: @escaping @MainActor () async throws -> Void) {
         guard !busy, !isRecording else { return }; busy = true; status = message
+        preparedModelKey = nil; modelStatus = "Modell durch anderen Vorgang belegt"
         task = Task {
-            defer { busy = false; task = nil }
+            defer { busy = false; task = nil; prepareSelectedModel() }
             do { try await operation(); try Task.checkCancellation(); status = "Fertig · lokal gespeichert" }
             catch { self.error = error.localizedDescription; status = "Vorgang nicht abgeschlossen" }
         }
     }
-    func cancel() { pending = []; task?.cancel(); engine.runner.cancel(); engine.warmWorker.stop(); status = "Abbruch angefordert …" }
+    func cancel() {
+        automaticPreparation = false; preparedModelKey = nil; modelStatus = "Modell nicht vorbereitet"
+        pending = []; task?.cancel(); engine.runner.cancel(); engine.warmWorker.stop(); status = "Abbruch angefordert …"
+    }
     func chooseDirectory(_ apply: (String) -> Void) {
         let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false
         if panel.runModal() == .OK, let url = panel.url { apply(url.path); saveSettings() }

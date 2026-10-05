@@ -11,7 +11,8 @@ struct TranscriptTests {
         suite.testVocabularyUsesWholeWordsAndEscapesReplacement()
         try suite.testLibraryRoundTripAndInterruptedJobRecovery()
         suite.testSubtitlesRoundAcrossMinuteBoundary()
-        print("6 core checks passed")
+        try suite.testOldRecordingWithoutTimingBreakdownStillLoads()
+        print("7 core checks passed")
     }
     func testDiarizationRespectsManualSpeakerAndTextEdits() {
         var locked = Segment(start: 0, end: 2, text: "Mein Name", speakerID: "person")
@@ -62,6 +63,19 @@ struct TranscriptTests {
         var record = Recording(title: "Test")
         record.segments = [Segment(start: 59.9997, end: 61, text: "Hallo")]
         XCTAssertTrue(Exporter.srt(record).contains("00:01:00,000 --> 00:01:01,000"))
+    }
+    func testOldRecordingWithoutTimingBreakdownStillLoads() throws {
+        var record = Recording(title: "Existing recording")
+        record.processingSeconds = 25.1
+        record.modelLoadSeconds = 20; record.transcriptionSeconds = 4.9; record.audioPreparationSeconds = 0.2
+        let encoder = JSONEncoder(), decoder = JSONDecoder()
+        let updated = try decoder.decode(Recording.self, from: encoder.encode(record))
+        XCTAssertEqual(updated.modelLoadSeconds, 20)
+        var old = try JSONSerialization.jsonObject(with: encoder.encode(record)) as! [String: Any]
+        for key in ["modelLoadSeconds", "transcriptionSeconds", "audioPreparationSeconds"] { old.removeValue(forKey: key) }
+        let loaded = try decoder.decode(Recording.self, from: JSONSerialization.data(withJSONObject: old))
+        XCTAssertEqual(loaded.processingSeconds, 25.1)
+        XCTAssertTrue(loaded.modelLoadSeconds == nil && loaded.transcriptionSeconds == nil && loaded.audioPreparationSeconds == nil)
     }
 }
 

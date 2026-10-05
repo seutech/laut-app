@@ -60,7 +60,10 @@ struct ContentView: View {
                 HStack(spacing: 9) {
                     if store.busy { ProgressView().controlSize(.small) }
                     else { Image(systemName: store.isRecording ? "record.circle.fill" : "lock.fill").foregroundStyle(store.isRecording ? .red : .teal) }
-                    Text(store.status).font(.caption).lineLimit(2)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(store.status).font(.caption).lineLimit(2)
+                        Text(store.modelStatus).font(.caption2).foregroundStyle(store.modelReady ? .teal : .secondary)
+                    }
                     Spacer()
                     if store.busy { Button("Abbrechen") { store.cancel() }.controlSize(.small) }
                     if store.isRecording { Button("Aufnahme beenden") { store.stopRecording() }.tint(.red) }
@@ -128,6 +131,13 @@ struct RecordingView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     TextField("Titel", text: binding(\.title)).textFieldStyle(.plain).font(.title.bold())
                     Text(record.createdAt.formatted(date: .long, time: .shortened) + (record.duration > 0 ? "  ·  " + Exporter.timestamp(record.duration) : "") + (record.engine.isEmpty ? "" : "  ·  " + record.engine)).font(.caption).foregroundStyle(.secondary)
+                    if let total = record.processingSeconds {
+                        Text("Gesamt: \(String(format: "%.2f", total)) s" +
+                             (record.transcriptionSeconds.map { " · Transkription: \(String(format: "%.2f", $0)) s" } ?? "") +
+                             (record.modelLoadSeconds.map { " · Modellladen: \(String(format: "%.2f", $0)) s" } ?? "") +
+                             (record.audioPreparationSeconds.map { " · Audio: \(String(format: "%.2f", $0)) s" } ?? ""))
+                            .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                    }
                 }
                 Spacer()
                 Menu {
@@ -139,7 +149,7 @@ struct RecordingView: View {
             }
             if record.kind != .note {
                 HStack {
-                    Picker("Modell", selection: $store.settings.engine) { ForEach(EngineKind.allCases) { Text($0.label).tag($0) } }.frame(maxWidth: 280)
+                    Picker("Modell", selection: $store.settings.engine) { ForEach(EngineKind.allCases) { Text($0.label).tag($0) } }.frame(maxWidth: 280).disabled(store.busy || store.isRecording)
                     Button(record.segments.isEmpty ? "Transkribieren" : "Neue Version") { store.transcribe(record.id) }.buttonStyle(.borderedProminent).disabled(store.busy || store.isRecording || record.audioFilename == nil)
                     if record.segments.isEmpty { Button("Alle offenen Dateien") { store.transcribeAll() }.disabled(store.busy || store.isRecording) }
                     Spacer()

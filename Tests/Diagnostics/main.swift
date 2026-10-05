@@ -22,11 +22,19 @@ import LautAudio
             settings.runtimeDirectory = root.appendingPathComponent(".runtime").path
             settings.modelPaths["phonon"] = settings.runtimeDirectory + "/models/speech/FermionResearch__Phonon-2/model_phonon2_c4c_int6"
             let engine = TranscriptionEngine(worker: root.appendingPathComponent("Resources/mlx_worker.py"))
+            if args.contains("--preload") {
+                let began = Date()
+                try await engine.preload(settings: settings)
+                print("Startup preparation: \(Date().timeIntervalSince(began)) seconds")
+                try await engine.preload(settings: settings)
+            }
             for run in 1...2 {
                 let began = Date()
                 let result = try await engine.transcribe(audio: temporary, settings: settings, vocabulary: [])
                 print(result.text)
                 print("Run \(run), end-to-end ASR seconds: \(Date().timeIntervalSince(began)); editor segments: \(result.editorSegments().count)")
+                print("Load: \(result.load_seconds ?? -1); transcription: \(result.decode_seconds ?? -1)")
+                if args.contains("--preload") { guard result.load_seconds == 0 else { throw LocalEngineError("Prepared model was reloaded during transcription") } }
                 guard !result.text.isEmpty else { throw LocalEngineError("Empty transcription") }
             }
             engine.warmWorker.stop()

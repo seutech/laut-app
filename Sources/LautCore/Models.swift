@@ -55,6 +55,9 @@ public struct Recording: Identifiable, Codable, Sendable {
     public var error: String?
     public var engine: String = ""
     public var processingSeconds: Double?
+    public var modelLoadSeconds: Double?
+    public var transcriptionSeconds: Double?
+    public var audioPreparationSeconds: Double?
     public init(title: String, kind: DocumentKind = .file, audioFilename: String? = nil) {
         self.title = title; self.kind = kind; self.audioFilename = audioFilename
     }
