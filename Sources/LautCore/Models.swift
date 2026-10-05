@@ -58,6 +58,7 @@ public struct Recording: Identifiable, Codable, Sendable {
     public var modelLoadSeconds: Double?
     public var transcriptionSeconds: Double?
     public var audioPreparationSeconds: Double?
+    public var editHistory: EditHistory?
     public init(title: String, kind: DocumentKind = .file, audioFilename: String? = nil) {
         self.title = title; self.kind = kind; self.audioFilename = audioFilename
     }

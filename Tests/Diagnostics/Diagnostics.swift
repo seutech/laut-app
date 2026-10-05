@@ -10,6 +10,10 @@ import LautAudio
         let models = root.appendingPathComponent(".runtime/models/diarization")
         if args.contains("--download-speakers") { try await analyzer.download(to: models); print("Speaker models ready"); return }
         guard args.count >= 2 else { print("Usage: swift run LautDiagnostics <audio> [--diarize] OR --download-speakers"); return }
+        if args.contains("--workflow") {
+            try await FileWorkflow.check(source: URL(fileURLWithPath: args[1]), project: root)
+            return
+        }
         let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("laut-diagnostic-\(UUID().uuidString).wav")
         defer { try? FileManager.default.removeItem(at: temporary) }
         let duration = try await AudioFiles.convert(URL(fileURLWithPath: args[1]), to: temporary)

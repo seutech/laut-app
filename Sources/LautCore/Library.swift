@@ -14,15 +14,30 @@ public final class Library: @unchecked Sendable {
     public func save(_ recording: Recording) throws {
         let dir = folder(recording.id)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        try encoder.encode(recording).write(to: dir.appendingPathComponent("recording.json"), options: .atomic)
+        let target = dir.appendingPathComponent("recording.json")
+        let encoded = try encoder.encode(recording)
+        if FileManager.default.fileExists(atPath: target.path) {
+            let previous = try Data(contentsOf: target)
+            let backup = (try? decoder.decode(Recording.self, from: previous)) != nil ? "recording.previous.json" : "recording.damaged-\(UUID().uuidString).json"
+            try previous.write(to: dir.appendingPathComponent(backup), options: .atomic)
+        }
+        try encoded.write(to: target, options: .atomic)
     }
     public func load() throws -> [Recording] {
         loadWarnings = []
         let urls = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
         return urls.filter { UUID(uuidString: $0.lastPathComponent) != nil }.compactMap { dir -> Recording? in
             let file = dir.appendingPathComponent("recording.json")
-            guard FileManager.default.fileExists(atPath: file.path) else { return nil }
-            guard var item = try? decoder.decode(Recording.self, from: Data(contentsOf: file)) else { loadWarnings.append("Nicht lesbar, unverändert erhalten: " + file.path); return nil }
+            let backup = dir.appendingPathComponent("recording.previous.json")
+            guard FileManager.default.fileExists(atPath: file.path) || FileManager.default.fileExists(atPath: backup.path) else { return nil }
+            var decoded = try? decoder.decode(Recording.self, from: Data(contentsOf: file))
+            if decoded?.id.uuidString != dir.lastPathComponent { decoded = nil }
+            if decoded == nil {
+                decoded = try? decoder.decode(Recording.self, from: Data(contentsOf: backup))
+                if decoded?.id.uuidString != dir.lastPathComponent { decoded = nil }
+                loadWarnings.append((decoded == nil ? "Nicht lesbar, unverändert erhalten: " : "Aus Sicherung geladen; Originaldatei bleibt unverändert: ") + file.path)
+            }
+            guard var item = decoded, item.id.uuidString == dir.lastPathComponent else { return nil }
             if item.state == .processing { item.state = .failed; item.error = "Verarbeitung wurde unterbrochen. Die Originaldatei ist erhalten; du kannst erneut starten." }
             return item
         }.sorted { $0.createdAt > $1.createdAt }

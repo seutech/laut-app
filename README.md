@@ -8,11 +8,12 @@ Laut is a native SwiftUI app for Apple Silicon. Import a recording, transcribe i
 
 ## What is implemented
 
-- Audio/video import through AVFoundation, including multiple files and drag-and-drop.
+- Audio/video import through AVFoundation, including multiple files and drag-and-drop. Imports validate the audio track, copy off the UI thread with progress and cancellation, and remove incomplete copies.
 - Phonon-2, multilingual Parakeet v3 and a Qwen3-ASR adapter; explicit model downloads or compatible local model directories.
 - A persistent, network-blocked model process: a loaded model stays available between transcriptions. Switch models or explicitly unload to reclaim memory.
 - Separate local speaker diarization through FluidAudio/Core ML. Rename speakers, reassign segments, split at a text/time boundary, merge segments or speakers. Manual assignments and named speakers are protected from reanalysis.
-- Editable transcripts, original transcript retention, playback, searchable local history and quick notes.
+- Editable transcripts, original transcript retention, searchable local history and quick notes. Up to 30 document edits can be undone/redone, including speaker corrections and segment splits, even after restarting.
+- Audio seeking, previous/next segment, five-second jumps, playback speed, transcript/speaker search, and highlighting/following the current segment. Automatic scrolling pauses while a transcript field is focused for editing.
 - Personal vocabulary: Phonon/Qwen hotwords and explicit spelling replacements.
 - Optional local MLX-LM text editing with custom instructions; results remain separate from the original.
 - Microphone recording and meeting recording with microphone + system audio. Transcription runs **after stopping**; live partial meeting transcripts are not implemented yet.
@@ -35,6 +36,8 @@ In **Modelle**, download a speech model. Downloads connect to Hugging Face/GitHu
 
 New transcripts show total processing time, model loading, audio preparation and speech recognition separately. Older recordings retain their original total time; missing timing breakdowns are not estimated retroactively. Cancelling preparation or explicitly unloading the model prevents automatic retries until a new model is selected or preparation is requested manually.
 
+Use **Rückgängig** / **Wiederherstellen** or **Command–Option–Z** / **Command–Option–Shift–Z** for saved document edits. Native text-field undo remains on Command–Z. Consecutive keystrokes in the same field are grouped while less than 1.5 seconds apart. The time-jump field accepts seconds, `mm:ss`, or `hh:mm:ss`, including fractional seconds.
+
 The local build is ad-hoc signed. It is not notarized for distribution. The runtime remains in this checkout's `.runtime` folder; moving the app does not bundle Python. If you move the checkout, select its new `.runtime` directory under **Einstellungen** and rebuild the virtual environment if needed. A self-contained installer is future work.
 
 ## Models and trade-offs
@@ -52,6 +55,7 @@ An arbitrary `.onnx`, `.bin` or `.gguf` file is not interchangeable with these b
 ## Privacy and storage
 
 - Recordings, transcripts, vocabulary and settings live in `~/Library/Application Support/Laut/`.
+- Each recording retains local edit history and one previous valid JSON save. If the current file cannot be read, Laut tries that backup and reports the recovery. Existing damaged data is preserved for inspection. This is local recovery, not a separate backup of your audio/library. JSON exports omit edit history; deleting an entry removes its history and backup along with it.
 - Models and the isolated Python runtime live in `.runtime/` by default. Neither belongs in Git.
 - Python inference runs under a macOS sandbox that denies all network operations. Communication uses anonymous pipes, with no HTTP service or listening port.
 - FluidAudio runs in offline mode except during an explicit model download. It does not receive or upload transcripts to a server.
@@ -70,9 +74,14 @@ python3 -m unittest discover -s Tests/Python -v
 swift run LautDiagnostics /path/to/test-audio.wav
 swift run LautDiagnostics --download-speakers  # explicit download
 swift run LautDiagnostics /path/to/test-audio.wav --diarize
+swift run LautDiagnostics /path/to/synthetic-fixture.wav --workflow
 ```
 
 The ASR diagnostic performs a cold and a warm run. Only synthetic test speech has been used in the initial smoke tests; no personal recordings are included. Initial M1 measurement: 11.09 seconds of German synthetic speech took 22.76 seconds with Phonon including the first load, then 0.27 seconds with the same model already loaded. Parakeet v3 transcribed that clip correctly in 13.58 seconds cold and 1.42 seconds warm while a build was running. These are smoke tests, not a controlled speed comparison, representative meeting benchmark or accuracy guarantee. Offline diarization separated a 46-second alternating two-voice synthetic clip into two speakers and four turns. Both ASR engines and diarization were exercised with networking denied by macOS; Qwen and text generation still need end-to-end validation.
+
+The 14 core checks cover editing/word retention, manual speaker protection, old document compatibility, persistent undo/redo and branching, bounded history, corrupted/missing-file recovery, save failure preservation and timestamp navigation. The `--workflow` diagnostic uses a temporary library to check import, invalid-file rejection, cancellation cleanup, ASR, speaker analysis, manual corrections, reopen, undo/redo and export. It requires installed Phonon and speaker models. It never writes to the user's library.
+
+For 0.1.2, this complete workflow passed with networking denied on both the six-minute fixture and the 46-second two-voice fixture. With Phonon prepared, ASR took 7.71 seconds and 0.99 seconds respectively, excluding startup preparation and speaker analysis. The long file retained end coverage at 362.53 seconds; the two-voice file produced two speakers and four turns. These synthetic diagnostics do not replace interactive testing of the playback/editor UI or tests with real conversations.
 
 A separate synthetic six-minute file (362.59 seconds) produced 12 ASR chunks and 750 timed words in 27.79 seconds including loading. Its last word reached 362.53 seconds and the backend reported no truncation. This exercises chunking and end-of-file coverage, not realistic conversational accuracy.
 

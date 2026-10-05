@@ -8,7 +8,7 @@ import LautAudio
 @MainActor
 final class AppStore: ObservableObject {
     @Published var recordings: [Recording] = []
-    @Published var selected: UUID?
+    @Published var selected: UUID? { didSet { if selected != oldValue { stopPlayback() } } }
     @Published var section = "library"
     @Published var search = ""
     @Published var settings = AppSettings()
@@ -19,6 +19,10 @@ final class AppStore: ObservableObject {
     @Published var isRecording = false
     @Published var playerTime: Double = 0
     @Published var playing = false
+    @Published var playbackDuration: Double = 0
+    @Published var playbackRate: Float = 1
+    @Published var importing = false
+    @Published var importStatus = ""
     @Published var modelStatus = "Modell nicht vorbereitet"
     private var preparedModelKey: String?
     private var observedModelKey: String?
@@ -27,7 +31,11 @@ final class AppStore: ObservableObject {
     let engine: TranscriptionEngine
     let analyzer = SpeakerAnalyzer()
     var task: Task<Void, Never>?
-    var player: AVAudioPlayer?
+    var player: AVPlayer?
+    private var playbackID: UUID?
+    private var importTask: Task<Void, Never>?
+    private var importQueue: [URL] = []
+    private let importer = FileImporter()
     private var timer: Timer?
     var recorder: AVAudioRecorder?
     var captureURL: URL?
@@ -37,7 +45,7 @@ final class AppStore: ObservableObject {
     var meeting: MeetingCapture?
     var meetingDirectory: URL?
     var shortcuts: GlobalShortcuts?
-    private var pending: [UUID] = []
+    @Published private(set) var pending: [UUID] = []
 
     init() {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Laut")
@@ -73,7 +81,14 @@ final class AppStore: ObservableObject {
         timer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
-                self.playerTime = self.player?.currentTime ?? 0; self.playing = self.player?.isPlaying ?? false
+                if let failure = self.player?.currentItem?.error {
+                    self.stopPlayback(); self.error = "Audio konnte nicht abgespielt werden: \(failure.localizedDescription)"; return
+                }
+                let position = self.player?.currentTime().seconds ?? 0
+                if position.isFinite, abs(self.playerTime - position) > 0.04 { self.playerTime = position }
+                let isPlaying = (self.player?.rate ?? 0) != 0
+                if self.playing != isPlaying { self.playing = isPlaying }
+                if let duration = self.player?.currentItem?.duration.seconds, duration.isFinite, duration > 0, self.playbackDuration != duration { self.playbackDuration = duration }
             }
         }
         shortcuts = GlobalShortcuts { [weak self] id in
@@ -134,10 +149,29 @@ final class AppStore: ObservableObject {
         }
     }
     func saveVocabulary() { do { try library.saveVocabulary(vocabulary) } catch { self.error = error.localizedDescription } }
-    func update(_ id: UUID, _ edit: (inout Recording) -> Void) {
-        guard let index = recordings.firstIndex(where: { $0.id == id }) else { return }
-        edit(&recordings[index])
-        do { try library.save(recordings[index]) } catch { self.error = error.localizedDescription }
+    @discardableResult func update(_ id: UUID, _ edit: (inout Recording) -> Void) -> Bool {
+        guard let index = recordings.firstIndex(where: { $0.id == id }) else { return false }
+        var candidate = recordings[index]; edit(&candidate)
+        return commit(candidate, at: index)
+    }
+    @discardableResult private func commit(_ candidate: Recording, at index: Int) -> Bool {
+        do { try library.save(candidate); recordings[index] = candidate; return true }
+        catch { self.error = "Änderung konnte nicht gespeichert werden. Der letzte gespeicherte Stand bleibt erhalten. \(error.localizedDescription)"; return false }
+    }
+    @discardableResult func edit(_ id: UUID, label: String, key: String? = nil, change: (inout Recording) -> Void) -> Bool {
+        guard let index = recordings.firstIndex(where: { $0.id == id }) else { return false }
+        let candidate = RecordingEditor.edit(recordings[index], label: label, key: key, change: change)
+        return commit(candidate, at: index)
+    }
+    var undoLabel: String? { current?.editHistory?.undo.last?.label }
+    var redoLabel: String? { current?.editHistory?.redo.last?.label }
+    func undoEdit() { moveEdit(forward: false) }
+    func redoEdit() { moveEdit(forward: true) }
+    private func moveEdit(forward: Bool) {
+        guard !busy, let index = recordings.firstIndex(where: { $0.id == selected }) else { return }
+        let result = forward ? RecordingEditor.redo(recordings[index]) : RecordingEditor.undo(recordings[index])
+        guard let result else { error = "Diese Änderung passt nicht mehr zum aktuellen Dokumentstand."; return }
+        commit(result, at: index)
     }
     func chooseFiles() {
         let panel = NSOpenPanel(); panel.allowsMultipleSelection = true
@@ -145,13 +179,33 @@ final class AppStore: ObservableObject {
         guard panel.runModal() == .OK else { return }; importFiles(panel.urls)
     }
     func importFiles(_ urls: [URL]) {
-        for url in urls {
-            let access = url.startAccessingSecurityScopedResource(); defer { if access { url.stopAccessingSecurityScopedResource() } }
-            do { let item = try library.importFile(url); recordings.insert(item, at: 0); selected = item.id }
-            catch { self.error = error.localizedDescription }
-        }
+        importQueue += urls
         section = "library"
+        guard importTask == nil else { return }
+        importing = true
+        importTask = Task {
+            defer {
+                importing = false; importTask = nil; importStatus = ""
+                if !importQueue.isEmpty { importFiles([]) }
+            }
+            var failures: [String] = []
+            while !importQueue.isEmpty && !Task.isCancelled {
+                let url = importQueue.removeFirst()
+                importStatus = "\(url.lastPathComponent) prüfen …"
+                do {
+                    let item = try await importer.importFile(url, root: library.root) { [weak self] fraction in
+                        Task { @MainActor in self?.importStatus = "\(url.lastPathComponent) kopieren · \(Int(fraction * 100)) %" }
+                    }
+                    recordings.insert(item, at: 0); selected = item.id
+                } catch {
+                    if Task.isCancelled { break }
+                    failures.append(url.lastPathComponent + ": " + error.localizedDescription)
+                }
+            }
+            if !failures.isEmpty { error = failures.joined(separator: "\n") }
+        }
     }
+    func cancelImport() { importQueue = []; importTask?.cancel() }
     func newNote() {
         let item = Recording(title: "Schnellnotiz", kind: .note)
         do { try library.save(item); recordings.insert(item, at: 0); selected = item.id; section = "library" }
@@ -174,7 +228,7 @@ final class AppStore: ObservableObject {
         }
         let config = settings, terms = vocabulary
         busy = true; status = "Audio vorbereiten …"
-        update(id) { $0.state = .processing; $0.error = nil }
+        guard update(id, { $0.state = .processing; $0.error = nil }) else { busy = false; pending = []; return }
         task = Task {
             let temp = library.folder(id).appendingPathComponent("processing.wav")
             defer { try? FileManager.default.removeItem(at: temp); busy = false; task = nil; nextJob() }
@@ -189,11 +243,12 @@ final class AppStore: ObservableObject {
                 modelStatus = "\(config.engine.label) bereit"
                 var segments = result.editorSegments()
                 for i in segments.indices { segments[i].text = TranscriptEditor.applyVocabulary(segments[i].text, entries: terms) }
-                update(id) {
+                let saved = update(id) {
                     $0.segments = segments; $0.originalSegments = result.editorSegments(); $0.duration = duration; $0.engine = config.engine.label
                     $0.processingSeconds = Date().timeIntervalSince(start); $0.audioPreparationSeconds = preparationSeconds
                     $0.modelLoadSeconds = result.load_seconds; $0.transcriptionSeconds = result.decode_seconds; $0.state = .complete
                 }
+                guard saved else { throw LocalEngineError("Transkript konnte nicht gespeichert werden. Die Audiodatei bleibt erhalten.") }
                 status = "Transkription fertig · \(String(format: "%.1f", Date().timeIntervalSince(start))) s für \(Exporter.timestamp(duration)) Audio"
                 if let target, let finished = recordings.first(where: { $0.id == id }) {
                     if !TextInsertion.insert(finished.plainText, into: target, anchor: anchor) { self.error = "Automatisches Einfügen war nicht möglich oder die Textposition hat sich geändert. Dein Diktat ist in Laut gespeichert." }
@@ -226,11 +281,12 @@ final class AppStore: ObservableObject {
                 let speakers = rawIDs.enumerated().map { Speaker(name: "Sprecher \($0.offset + 1)") }
                 let mapping = Dictionary(uniqueKeysWithValues: zip(rawIDs, speakers.map(\.id)))
                 let mapped = turns.map { SpeakerTurn(speakerID: mapping[$0.speakerID]!, start: $0.start, end: $0.end) }
-                update(id) { record in
+                let saved = edit(id, label: "Sprecheranalyse") { record in
                     record.segments = TranscriptEditor.assign(mapped, to: record.segments)
                     let retained = Set(record.segments.compactMap(\.speakerID))
                     record.speakers = (record.speakers + speakers).filter { retained.contains($0.id) }
                 }
+                guard saved else { throw LocalEngineError("Sprecherkorrekturen konnten nicht gespeichert werden.") }
                 status = "Sprecheranalyse fertig. Namen und Zuordnungen kannst du jetzt korrigieren."
             } catch { self.error = error.localizedDescription; status = "Sprecheranalyse nicht abgeschlossen" }
         }
@@ -273,24 +329,46 @@ final class AppStore: ObservableObject {
         guard let record = recordings.first(where: { $0.id == id }) else { return }
         perform("Text mit lokalem Modell bearbeiten …") {
             let text = try await self.engine.refine(record.kind == .note ? record.notes : record.plainText, settings: self.settings)
-            try Task.checkCancellation(); self.update(id) { $0.refinedText = text }
+            try Task.checkCancellation()
+            guard self.edit(id, label: "KI-Bearbeitung", change: { $0.refinedText = text }) else { throw LocalEngineError("Textbearbeitung konnte nicht gespeichert werden.") }
         }
     }
     func play(_ recording: Recording, at time: Double? = nil) {
-        guard let url = library.audioURL(recording) else { return }
-        do {
-            if player?.url != url { player = try AVAudioPlayer(contentsOf: url) }
-            if let time { player?.currentTime = time; player?.play() }
-            else if player?.isPlaying == true { player?.pause() } else { player?.play() }
-        } catch { self.error = error.localizedDescription }
+        guard preparePlayback(recording) else { return }
+        if let time { seek(recording, to: time); player?.playImmediately(atRate: playbackRate) }
+        else if (player?.rate ?? 0) != 0 { player?.pause() }
+        else {
+            if playerTime >= max(playbackDuration, recording.duration) - 0.1 { seek(recording, to: 0) }
+            player?.playImmediately(atRate: playbackRate)
+        }
     }
-    func stopPlayback() { player?.stop(); player = nil }
+    private func preparePlayback(_ recording: Recording) -> Bool {
+        guard let url = library.audioURL(recording) else { return false }
+        if playbackID != recording.id {
+            stopPlayback(); player = AVPlayer(url: url); playbackID = recording.id; playbackDuration = recording.duration
+        }
+        if let failure = player?.currentItem?.error { error = failure.localizedDescription; return false }
+        return true
+    }
+    func playbackIsLoaded(_ id: UUID) -> Bool { playbackID == id }
+    func seek(_ recording: Recording, to time: Double) {
+        guard time.isFinite, preparePlayback(recording) else { return }
+        let bounded = min(max(0, time), max(playbackDuration, recording.duration, 0))
+        playerTime = bounded
+        player?.seek(to: CMTime(seconds: bounded, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+    }
+    func skip(_ recording: Recording, by seconds: Double) { seek(recording, to: playerTime + seconds) }
+    func jumpSegment(_ recording: Recording, forward: Bool) {
+        if let start = TranscriptNavigation.adjacentStart(from: playerTime, forward: forward, in: recording.segments) { play(recording, at: start) }
+    }
+    func setPlaybackRate(_ rate: Float) { playbackRate = rate; if playing { player?.rate = rate } }
+    func stopPlayback() { player?.pause(); player = nil; playbackID = nil; playerTime = 0; playbackDuration = 0; playing = false }
     func export(_ record: Recording, format: String) {
         let panel = NSSavePanel(); panel.nameFieldStringValue = record.title + "." + format
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             let data: Data
-            if format == "json" { let encoder = JSONEncoder(); encoder.outputFormatting = .prettyPrinted; data = try encoder.encode(record) }
+            if format == "json" { let encoder = JSONEncoder(); encoder.outputFormatting = .prettyPrinted; var exported = record; exported.editHistory = nil; data = try encoder.encode(exported) }
             else { data = Data((format == "srt" ? Exporter.srt(record) : format == "md" ? Exporter.markdown(record) : (record.kind == .note ? record.notes : record.plainText)).utf8) }
             try data.write(to: url, options: .atomic)
         } catch { self.error = error.localizedDescription }

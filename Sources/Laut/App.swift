@@ -10,6 +10,10 @@ struct LautApp: App {
                 .frame(minWidth: 1000, minHeight: 680)
         }
         .commands {
+            CommandGroup(after: .undoRedo) {
+                Button("Dokumentänderung zurücknehmen") { store.undoEdit() }.keyboardShortcut("z", modifiers: [.command, .option]).disabled(store.busy || store.undoLabel == nil)
+                Button("Dokumentänderung wiederherstellen") { store.redoEdit() }.keyboardShortcut("z", modifiers: [.command, .option, .shift]).disabled(store.busy || store.redoLabel == nil)
+            }
             CommandGroup(after: .newItem) {
                 Button("Dateien importieren …") { store.chooseFiles() }.keyboardShortcut("o")
                 Button("Schnellnotiz") { store.newNote() }.keyboardShortcut("n")

@@ -65,9 +65,13 @@ struct ContentView: View {
                         Text(store.modelStatus).font(.caption2).foregroundStyle(store.modelReady ? .teal : .secondary)
                     }
                     Spacer()
+                    if !store.pending.isEmpty { Text("\(store.pending.count) Dateien warten").font(.caption).foregroundStyle(.secondary) }
                     if store.busy { Button("Abbrechen") { store.cancel() }.controlSize(.small) }
                     if store.isRecording { Button("Aufnahme beenden") { store.stopRecording() }.tint(.red) }
                 }.padding(12).background(.bar)
+                if store.importing {
+                    HStack { ProgressView().controlSize(.small); Text(store.importStatus).font(.caption).lineLimit(1); Spacer(); Button("Import abbrechen") { store.cancelImport() }.controlSize(.small) }.padding(10)
+                }
             }
             .overlay { if dropping { RoundedRectangle(cornerRadius: 16).stroke(.teal, style: StrokeStyle(lineWidth: 3, dash: [8])).padding(12).allowsHitTesting(false) } }
             .onDrop(of: [.fileURL], isTargeted: $dropping) { providers in
@@ -122,8 +126,14 @@ struct RecordingView: View {
     @State private var splitSegment: Segment?
     @State private var confirmDelete = false
     @State private var confirmAudioDelete = false
+    @State private var transcriptSearch = ""
+    @State private var followPlayback = true
+    @State private var jumpTime = ""
+    @FocusState private var focusedSegment: UUID?
+    var activeSegmentID: UUID? { store.playbackIsLoaded(record.id) ? TranscriptNavigation.activeSegment(at: store.playerTime, in: record.segments) : nil }
+    var visibleSegments: [Segment] { transcriptSearch.isEmpty ? record.segments : record.segments.filter { ($0.text + " " + record.speakerName($0.speakerID)).localizedCaseInsensitiveContains(transcriptSearch) } }
     func binding<T>(_ key: WritableKeyPath<Recording, T>) -> Binding<T> {
-        Binding(get: { store.recordings.first { $0.id == record.id }?[keyPath: key] ?? record[keyPath: key] }, set: { value in store.update(record.id) { $0[keyPath: key] = value } })
+        Binding(get: { store.recordings.first { $0.id == record.id }?[keyPath: key] ?? record[keyPath: key] }, set: { value in store.edit(record.id, label: "Text bearbeiten", key: String(describing: key)) { $0[keyPath: key] = value } })
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -147,6 +157,14 @@ struct RecordingView: View {
                     Button("Eintrag löschen …", role: .destructive) { confirmDelete = true }.disabled(store.busy)
                 } label: { Label("Export & mehr", systemImage: "square.and.arrow.up") }
             }
+            HStack(spacing: 12) {
+                Button { store.undoEdit() } label: { Label("Rückgängig", systemImage: "arrow.uturn.backward") }
+                    .disabled(store.busy || store.undoLabel == nil).help(store.undoLabel ?? "Keine Änderung zurückzunehmen")
+                Button { store.redoEdit() } label: { Label("Wiederherstellen", systemImage: "arrow.uturn.forward") }
+                    .disabled(store.busy || store.redoLabel == nil).help(store.redoLabel ?? "Keine Änderung wiederherzustellen")
+                Text("Bis zu 30 Änderungen · auch nach Neustart").font(.caption2).foregroundStyle(.secondary)
+                Spacer()
+            }
             if record.kind != .note {
                 HStack {
                     Picker("Modell", selection: $store.settings.engine) { ForEach(EngineKind.allCases) { Text($0.label).tag($0) } }.frame(maxWidth: 280).disabled(store.busy || store.isRecording)
@@ -155,10 +173,23 @@ struct RecordingView: View {
                     Spacer()
                 }
                 if record.audioFilename != nil {
-                    HStack(spacing: 12) {
-                        Button { store.play(record) } label: { Image(systemName: store.playing ? "pause.fill" : "play.fill") }.buttonStyle(.bordered)
-                        Slider(value: Binding(get: { min(store.playerTime, max(record.duration, 1)) }, set: { store.player?.currentTime = $0; store.playerTime = $0 }), in: 0...max(record.duration, 1))
-                        Text(Exporter.timestamp(store.playerTime)).font(.caption.monospacedDigit())
+                    VStack(spacing: 12) {
+                        HStack(spacing: 12) {
+                            Button { store.jumpSegment(record, forward: false) } label: { Image(systemName: "backward.end") }.help("Vorheriger Abschnitt")
+                            Button { store.skip(record, by: -5) } label: { Image(systemName: "gobackward.5") }.help("5 Sekunden zurück")
+                            Button { store.play(record) } label: { Image(systemName: store.playing ? "pause.fill" : "play.fill") }.buttonStyle(.bordered)
+                            Button { store.skip(record, by: 5) } label: { Image(systemName: "goforward.5") }.help("5 Sekunden vor")
+                            Button { store.jumpSegment(record, forward: true) } label: { Image(systemName: "forward.end") }.help("Nächster Abschnitt")
+                            Slider(value: Binding(get: { min(store.playerTime, max(record.duration, store.playbackDuration, 1)) }, set: { store.seek(record, to: $0) }), in: 0...max(record.duration, store.playbackDuration, 1))
+                            Text(Exporter.timestamp(store.playerTime)).font(.caption.monospacedDigit())
+                        }
+                        HStack {
+                            Picker("Tempo", selection: Binding(get: { store.playbackRate }, set: { store.setPlaybackRate($0) })) { ForEach([Float(0.75), 1, 1.25, 1.5, 2], id: \.self) { Text(String(format: "%g×", $0)).tag($0) } }.frame(width: 155)
+                            Toggle("Text folgt Wiedergabe", isOn: $followPlayback).font(.caption)
+                            Spacer()
+                            TextField("mm:ss", text: $jumpTime).textFieldStyle(.roundedBorder).frame(width: 75).onSubmit(jumpToTime)
+                            Button("Springen", action: jumpToTime).disabled(TranscriptNavigation.parseTime(jumpTime) == nil)
+                        }
                     }.padding(12).background(Color.teal.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
                 }
             }
@@ -183,40 +214,57 @@ struct RecordingView: View {
         }.padding(28)
         .onAppear { if record.kind == .note { tab = 2 } }
         .sheet(item: $splitSegment) { segment in SplitView(segment: segment) { pieces in
-            store.update(record.id) { item in if let index = item.segments.firstIndex(where: { $0.id == segment.id }) { item.segments.replaceSubrange(index...index, with: pieces) } }
+            store.edit(record.id, label: "Abschnitt teilen") { item in if let index = item.segments.firstIndex(where: { $0.id == segment.id }) { item.segments.replaceSubrange(index...index, with: pieces) } }
         } }
         .confirmationDialog("Eintrag und zugehörige lokale Dateien endgültig löschen?", isPresented: $confirmDelete) { Button("Löschen", role: .destructive) { store.delete(record) } }
         .confirmationDialog("Audiodateien löschen? Text und Notizen bleiben erhalten. Wiedergabe und neue Sprecheranalyse sind danach nicht mehr möglich.", isPresented: $confirmAudioDelete) { Button("Audio löschen", role: .destructive) { store.removeAudio(record.id) } }
     }
     var transcript: some View {
-        ScrollView {
-            if record.segments.isEmpty {
-                ContentUnavailableView("Bereit für dein Transkript", systemImage: "text.alignleft", description: Text("Wähle ein installiertes Modell und starte die lokale Transkription."))
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                TextField("Im Transkript oder nach Sprechern suchen …", text: $transcriptSearch).textFieldStyle(.roundedBorder)
+                if !transcriptSearch.isEmpty { Text("\(visibleSegments.count) Treffer").font(.caption); Button("Leeren") { transcriptSearch = "" } }
             }
-            LazyVStack(alignment: .leading, spacing: 16) {
-                ForEach(record.segments) { segment in
-                    VStack(alignment: .leading, spacing: 9) {
-                        HStack {
-                            Button(Exporter.timestamp(segment.start)) { store.play(record, at: segment.start) }.font(.caption.monospacedDigit()).buttonStyle(.plain).foregroundStyle(.teal)
-                            Picker("Sprecher", selection: Binding(get: { segment.speakerID ?? "" }, set: { value in store.update(record.id) { item in if let i = item.segments.firstIndex(where: { $0.id == segment.id }) { item.segments[i].speakerID = value.isEmpty ? nil : value; item.segments[i].speakerLocked = true } } })) {
-                                Text("Unzugeordnet").tag("")
-                                ForEach(record.speakers) { Text($0.name).tag($0.id) }
-                            }.labelsHidden().fixedSize().disabled(store.busy)
-                            if segment.speakerLocked { Image(systemName: "lock.fill").font(.caption2).foregroundStyle(.secondary).help("Manuelle Zuordnung bleibt bei neuer Analyse erhalten") }
-                            Spacer()
-                            Menu {
-                                Button("Abschnitt teilen …") { splitSegment = segment }.disabled(segment.text.count < 2)
-                                Button("Mit nächstem Abschnitt verbinden") { mergeNext(segment) }
-                                Button("Automatische Sprecherzuordnung wieder erlauben") { store.update(record.id) { item in if let i = item.segments.firstIndex(where: { $0.id == segment.id }) { item.segments[i].speakerLocked = false } } }
-                            } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize().disabled(store.busy)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    if record.segments.isEmpty {
+                        ContentUnavailableView("Bereit für dein Transkript", systemImage: "text.alignleft", description: Text("Wähle ein installiertes Modell und starte die lokale Transkription."))
+                    }
+                    LazyVStack(alignment: .leading, spacing: 16) {
+                        ForEach(visibleSegments) { segment in
+                            VStack(alignment: .leading, spacing: 9) {
+                                HStack {
+                                    Button(Exporter.timestamp(segment.start)) { store.play(record, at: segment.start) }.font(.caption.monospacedDigit()).buttonStyle(.plain).foregroundStyle(.teal)
+                                    Picker("Sprecher", selection: Binding(get: { segment.speakerID ?? "" }, set: { value in store.edit(record.id, label: "Sprecher zuordnen") { item in if let i = item.segments.firstIndex(where: { $0.id == segment.id }) { item.segments[i].speakerID = value.isEmpty ? nil : value; item.segments[i].speakerLocked = true } } })) {
+                                        Text("Unzugeordnet").tag("")
+                                        ForEach(record.speakers) { Text($0.name).tag($0.id) }
+                                    }.labelsHidden().fixedSize().disabled(store.busy)
+                                    if segment.speakerLocked { Image(systemName: "lock.fill").font(.caption2).foregroundStyle(.secondary).help("Manuelle Zuordnung bleibt bei neuer Analyse erhalten") }
+                                    Spacer()
+                                    Menu {
+                                        Button("Abschnitt teilen …") { splitSegment = segment }.disabled(segment.text.count < 2)
+                                        Button("Mit nächstem Abschnitt verbinden") { mergeNext(segment) }
+                                        Button("Automatische Sprecherzuordnung wieder erlauben") { store.edit(record.id, label: "Sprecherzuordnung entsperren") { item in if let i = item.segments.firstIndex(where: { $0.id == segment.id }) { item.segments[i].speakerLocked = false } } }
+                                    } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize().disabled(store.busy)
+                                }
+                                TextField("Text", text: Binding(get: { segment.text }, set: { text in store.edit(record.id, label: "Text korrigieren", key: "segment-" + segment.id.uuidString) { item in if let i = item.segments.firstIndex(where: { $0.id == segment.id }) { item.segments[i].text = text } } }), axis: .vertical)
+                                    .textFieldStyle(.plain).font(.system(size: 15)).lineSpacing(5).disabled(store.busy)
+                                    .focused($focusedSegment, equals: segment.id)
+                                if segment.text != segment.originalText { Text("Bearbeitet").font(.caption2).foregroundStyle(.secondary).help("Original: " + segment.originalText) }
+                            }.padding(16).background(activeSegmentID == segment.id ? Color.teal.opacity(0.12) : Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12)).id(segment.id)
                         }
-                        TextField("Text", text: Binding(get: { segment.text }, set: { text in store.update(record.id) { item in if let i = item.segments.firstIndex(where: { $0.id == segment.id }) { item.segments[i].text = text } } }), axis: .vertical)
-                            .textFieldStyle(.plain).font(.system(size: 15)).lineSpacing(5).disabled(store.busy)
-                        if segment.text != segment.originalText { Text("Bearbeitet").font(.caption2).foregroundStyle(.secondary).help("Original: " + segment.originalText) }
-                    }.padding(16).background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
+                    }
+                }
+                .onChange(of: activeSegmentID) { _, id in
+                    if followPlayback, store.playing, focusedSegment == nil, let id, visibleSegments.contains(where: { $0.id == id }) {
+                        withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(id, anchor: .center) }
+                    }
                 }
             }
         }
+    }
+    func jumpToTime() {
+        if let time = TranscriptNavigation.parseTime(jumpTime) { store.seek(record, to: time) }
     }
     var speakers: some View {
         ScrollView {
@@ -226,19 +274,19 @@ struct RecordingView: View {
                 HStack {
                     Picker("Anzahl", selection: $speakerCount) { Text("Automatisch").tag(0); ForEach(1...12, id: \.self) { Text("\($0)").tag($0) } }.frame(width: 200)
                     Button("Sprecher erkennen") { store.diarize(record.id, count: speakerCount == 0 ? nil : speakerCount) }.disabled(store.busy || record.segments.isEmpty || record.audioFilename == nil)
-                    Button("Sprecher hinzufügen") { store.update(record.id) { $0.speakers.append(Speaker(name: "Neue Person")) } }.disabled(store.busy)
+                    Button("Sprecher hinzufügen") { store.edit(record.id, label: "Sprecher hinzufügen") { $0.speakers.append(Speaker(name: "Neue Person")) } }.disabled(store.busy)
                 }
                 ForEach(record.speakers) { speaker in
                     HStack {
                         Image(systemName: "person.crop.circle.fill").foregroundStyle(.teal).font(.title2)
-                        TextField("Name", text: Binding(get: { speaker.name }, set: { name in store.update(record.id) { item in
+                        TextField("Name", text: Binding(get: { speaker.name }, set: { name in store.edit(record.id, label: "Sprecher benennen", key: "speaker-" + speaker.id) { item in
                             if let i = item.speakers.firstIndex(where: { $0.id == speaker.id }) { item.speakers[i].name = name }
                             for i in item.segments.indices where item.segments[i].speakerID == speaker.id { item.segments[i].speakerLocked = true }
                         } })).textFieldStyle(.roundedBorder)
                         Text("\(record.segments.filter { $0.speakerID == speaker.id }.count) Abschnitte").font(.caption).foregroundStyle(.secondary)
                         Menu("Zusammenführen mit …") {
                             ForEach(record.speakers.filter { $0.id != speaker.id }) { other in
-                                Button(other.name) { store.update(record.id) { item in
+                                Button(other.name) { store.edit(record.id, label: "Sprecher zusammenführen") { item in
                                     for i in item.segments.indices where item.segments[i].speakerID == speaker.id { item.segments[i].speakerID = other.id; item.segments[i].speakerLocked = true }
                                     item.speakers.removeAll { $0.id == speaker.id }
                                 } }
@@ -250,7 +298,7 @@ struct RecordingView: View {
         }
     }
     func mergeNext(_ segment: Segment) {
-        store.update(record.id) { item in
+        store.edit(record.id, label: "Abschnitte verbinden") { item in
             guard let i = item.segments.firstIndex(where: { $0.id == segment.id }), i + 1 < item.segments.count else { return }
             let next = item.segments[i + 1]
             item.segments[i].end = next.end; item.segments[i].text += " " + next.text
