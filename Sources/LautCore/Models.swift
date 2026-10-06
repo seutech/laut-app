@@ -54,6 +54,7 @@ public struct Recording: Identifiable, Codable, Sendable {
     public var state: JobState = .ready
     public var error: String?
     public var engine: String = ""
+    public var source: SourceMetadata?
     public var processingSeconds: Double?
     public var modelLoadSeconds: Double?
     public var transcriptionSeconds: Double?
@@ -107,6 +108,7 @@ public struct AppSettings: Codable, Sendable {
     public var automaticSpeakerDetection: Bool?
     public var markdownDirectory: String?
     public var markdownExportEnabled: Bool?
+    public var downloadToolPaths: [String: String]?
     public var searchMode: SearchMode?
     public var embeddingModel: EmbeddingModel?
     public var embeddingPaths: [String: String]?
@@ -200,6 +202,11 @@ public enum Exporter {
     }
     public static func markdown(_ recording: Recording) -> String {
         var output = "# \(recording.title)\n\n"
+        if let source = recording.source {
+            output += "Quelle: " + source.url + "\n\n"
+            if let date = source.publishedOn { output += "Veröffentlicht: " + date + "\n\n" }
+            if let publisher = source.publisher { output += "Herausgeber: " + publisher + "\n\n" }
+        }
         for segment in recording.segments {
             output += "**\(recording.speakerName(segment.speakerID))** · \(timestamp(segment.start))\n\n\(segment.text)\n\n"
         }

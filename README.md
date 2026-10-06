@@ -13,6 +13,8 @@ Laut is a native SwiftUI app for Apple Silicon. Import a recording, transcribe i
 ## What is implemented
 
 - Audio/video import through AVFoundation, including multiple files and drag-and-drop. Imports validate the audio track, copy off the UI thread with progress and cancellation, and remove incomplete copies.
+- YouTube audio and direct HTTPS audio-file imports, optional automatic local transcription, and a persisted sequential job list. Finished downloads survive a later transcription failure; unfinished jobs pause after restart until explicitly resumed.
+- Source URL, original title, publisher, publication date and reported audio language are retained when supplied by the source. New imported audio has a readable `YYYY-MM-DD TITLE.ext` filename and can be revealed in Finder or opened externally.
 - Phonon-2, multilingual Parakeet v3 and a Qwen3-ASR adapter; explicit model downloads or compatible local model directories.
 - A persistent, network-blocked model process: a loaded model stays available between transcriptions. Switch models or explicitly unload to reclaim memory.
 - Local speaker diarization through FluidAudio/Core ML, enabled by default directly after transcription. Turn **Sprecher automatisch erkennen** off to skip the extra analysis. Rename speakers, reassign segments, split at a text/time boundary, merge segments or speakers. Manual assignments and named speakers are protected from reanalysis.
@@ -52,6 +54,18 @@ Use **Rückgängig** / **Wiederherstellen** or **Command–Option–Z** / **Comm
 
 The local build is ad-hoc signed. It is not notarized for distribution. The runtime remains in this checkout's `.runtime` folder; moving the app does not bundle Python. If you move the checkout, select its new `.runtime` directory under **Einstellungen** and rebuild the virtual environment if needed. A self-contained installer is future work.
 
+## Audio links and saved jobs
+
+For optional link imports, run `bash scripts/setup-downloads.sh` to install the pinned yt-dlp release with compatible EJS components in a separate `.runtime/download-venv`. Install Deno 2.3+ and FFmpeg/FFprobe separately (for example, `brew install deno ffmpeg`). **Einstellungen → Linkimport** displays discovered executables and allows explicit paths. Discovery checks Laut's runtime first, then common Homebrew paths. No executable is installed automatically when a link is pasted.
+
+Open **Quellen & Aufträge**, paste an individual YouTube video or a direct HTTPS audio-file link, and click **Laden**. Automatic transcription is on by default; turn it off to retain just the imported audio. YouTube watch, short, embed and short-link forms resolve to the same video ID to avoid duplicate jobs. Video links containing a playlist parameter import only that single video. Whole playlists, channels, running livestreams, login/age-restricted sources, Vimeo pages and podcast RSS feeds are not supported in this first version. Public podcast MP3 links are supported. No browser cookies, account credentials, user yt-dlp configuration, third-party plugins or remotely fetched EJS code are used. Some public videos may still fail due to YouTube restrictions; errors appear in the job list and do not trigger a login workaround.
+
+Link imports allow up to **six hours and 2 GiB per source audio file**. The importer chooses an audio-only YouTube format, checks for actual audio/no video, and retains M4A or converts other formats to AAC/M4A. Conversion can be lossy. It checks disk space, bounds retries/timeouts, and verifies duration before publishing a completed download. These are enforced limits, not evidence that six-hour jobs have been validated. Local file import retains its existing behavior and has no new size limit.
+
+Download, library import and transcription run sequentially with saved stages and a preassigned recording ID. **Alle pausieren** stops the active job and pauses waiting jobs. After restarting, open jobs remain paused; **Fortsetzen** reuses a completed download or existing library audio. An interrupted partial download starts again, and interrupted speech recognition starts again from that audio; this is not word-level inference resumption. Transcription uses the model/settings selected when its turn starts. Already saved transcripts are retained; interrupted speaker analysis can be rerun from the speaker controls. Removing a job deletes its remaining download cache, but keeps published library entries. A damaged job ledger is reported and never silently replaced.
+
+Source metadata appears above a transcript and in Markdown/JSON exports. Publication date is distinct from import date; the filename date continues to mean import/recording date. Reported language comes from the provider and is not a guarantee of the original audio language. Editable event dates, reporting periods, multi-document dossiers and full-source research analysis remain future work.
+
 ## Models and trade-offs
 
 | Backend | Intended use | Timing support |
@@ -81,6 +95,7 @@ The feature design was informed by publicly described workflows in other transcr
 - The automatic Markdown archive defaults to `~/Documents/Laut/Transkripte/`. The filename date is the recording/import date in Laut, not the source file's original creation date. Existing nonempty transcripts and notes are exported too. Corrections in Laut refresh the archive after a short debounce; title changes rename Laut's unchanged copy. Duplicate names receive numeric suffixes. If an exported file was edited externally, that file is retained and a new numbered copy receives Laut's update. External Markdown edits are not imported into the app. Deleting an entry in Laut does not delete its archive copy; changing the archive folder leaves old copies in place. The hidden `.laut-archive.json` tracks ownership and hashes; damaged bookkeeping is reported rather than ignored. The archive contains text, not source audio or full edit history, so it is not a complete library backup. Laut does not upload it; choose a folder outside any OS or third-party cloud synchronization if those copies must stay exclusively on the Mac.
 - The derived `search-v1.sqlite` index (and SQLite journal files) stores local text snippets and optional embeddings beside the library. It is not encrypted separately. Deletions/edits remove or invalidate indexed content; the original recording JSON remains authoritative.
 - Recordings, transcripts, vocabulary and settings live in `~/Library/Application Support/Laut/`.
+- Link imports connect only when explicitly started or resumed; the provider/CDN sees ordinary request metadata including the IP address. Transcription still runs with networking blocked. The job ledger (`import-jobs.json`) stores source links/local paths, stages and errors locally. URL query strings may contain access tokens: avoid sharing that ledger. Finished downloads wait in `import-jobs/<job ID>/` until the job completes; unpublished library copies use `.import-staging/`. Removing an incomplete job clears its download folder; retry replaces that job's partial staging copy. These files are not a separate backup.
 - Each recording retains local edit history and one previous valid JSON save. If the current file cannot be read, Laut tries that backup and reports the recovery. Existing damaged data is preserved for inspection. This is local recovery, not a separate backup of your audio/library. JSON exports omit edit history; deleting an entry removes its history and backup along with it.
 - Waveform peaks are cached locally beside each recording as `waveform-v1.json`, regenerated when the source changes, and removed when its audio is deleted. Waveform generation streams small audio buffers and keeps at most 60,000 peaks.
 - Models and the isolated Python runtime live in `.runtime/` by default. Neither belongs in Git.
@@ -93,7 +108,7 @@ The feature design was informed by publicly described workflows in other transcr
 
 ## Verification
 
-There is currently no hard file-size or duration limit in the audio/video importer, but hour-long meetings and large video files have not been validated. Import retains a copy of the source file; processing also needs a temporary 16 kHz mono 16-bit WAV (approximately 115 MB per audio hour), model memory and derived data. Multiple files are transcribed sequentially. Text-model input is limited to fewer than 24,000 characters and output to 4,096 tokens; long-document summarization in multiple passes is not implemented yet.
+There is currently no hard file-size or duration limit in the local audio/video importer, but hour-long meetings and large video files have not been validated. Import retains a copy of the source file; processing also needs a temporary 16 kHz mono 16-bit WAV (approximately 115 MB per audio hour), model memory and derived data. Multiple files are transcribed sequentially. Text-model input is limited to fewer than 24,000 characters and output to 4,096 tokens; long-document summarization in multiple passes is not implemented yet.
 
 The checks are plain Swift executables, so they also work with Command Line Tools installations without XCTest:
 
@@ -168,3 +183,17 @@ The threshold is optional and must be chosen for the particular evaluation. A sa
 ### 0.1.8 Markdown archive
 
 Core archive checks cover deterministic dates, filename sanitization and UTF-8 length, metadata and content, idempotent synchronization, transcript updates, title changes, duplicate titles, externally edited files, symlinks, retained deleted entries and damaged manifests. These filesystem checks and a native app build passed; the new Settings controls still need interactive verification.
+
+### 0.1.9 Audio links and saved jobs
+
+Core checks now cover supported/rejected URL forms, canonical YouTube identities, durable job IDs/stages, pause-on-restart, damaged-ledger preservation and backward-compatible source metadata. The 19 Python checks include audio/video validation, private-address rejection, incomplete checkpoints, truncated audio, live-source rejection, timeout cleanup and terminating a helper together with its downloader child. Existing core/search/archive and nine native audio interface checks passed.
+
+An actual public YouTube audio-only import of Blender's *Big Buck Bunny* completed with 596.52 seconds of M4A audio (9,648,640 bytes), title, publisher and publication date. Download and validation took 75.92 seconds on this connection; this is network time, not speech recognition. A direct MP3 fixture from Mozilla also passed (2.07 seconds of audio). Native Swift/Python integration checks exercised checkpoint reuse, replacement of an interrupted staging copy, stable recording IDs, duplicate protection and source metadata after library reopen. An unrelated test server returned HTML and was rejected without importing it.
+
+The existing synthetic German two-speaker workflow also passed through import, Parakeet, speaker analysis, manual corrections, save/reopen, undo/redo and export. For 55.93 seconds of audio, model preparation took 8.33 seconds and ASR 1.99 seconds; the speaker stage found two speakers. These are narrow synthetic/integration checks. Interactive SwiftUI job controls, a forced app restart during an actual download, long recordings near the new limits, and broad YouTube compatibility still need validation. The YouTube fixture was not used to evaluate ASR quality.
+
+To run a link integration check against a public source (this explicitly accesses the network and keeps downloaded audio in the output directory):
+
+```sh
+swift run LautDiagnostics --link-import 'https://www.youtube.com/watch?v=YE7VzlLtp-4' --output .runtime/evaluations/link-import-new
+```

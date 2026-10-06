@@ -6,6 +6,10 @@ import LautAudio
     static func main() async throws {
         let args = CommandLine.arguments
         let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        if let input = try DiagnosticConfiguration.value("--link-import", in: args) {
+            guard let output = try DiagnosticConfiguration.value("--output", in: args) else { throw LocalEngineError("Provide --output with a new local directory") }
+            try await LinkWorkflow.run(project: root, input: input, output: URL(fileURLWithPath: output)); return
+        }
         if let input = try DiagnosticConfiguration.value("--archive-library", in: args) {
             guard let output = try DiagnosticConfiguration.value("--archive-output", in: args) else { throw LocalEngineError("Provide --archive-output") }
             let library = try Library(root: URL(fileURLWithPath: input))

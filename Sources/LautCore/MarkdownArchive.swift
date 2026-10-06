@@ -26,6 +26,13 @@ public actor MarkdownArchive {
         func quoted(_ value: String) throws -> String { String(decoding: try JSONEncoder().encode(value), as: UTF8.self) }
         var output = "---\nlaut_id: \(try quoted(record.id.uuidString))\ntitle: \(try quoted(record.title))\ncreated: \(try quoted(ISO8601DateFormatter().string(from: record.createdAt)))\nduration_seconds: \(record.duration)\nengine: \(try quoted(record.engine))\n---\n\n"
         output += "# " + record.title.replacingOccurrences(of: "\n", with: " ") + "\n\n"
+        if let source = record.source {
+            output += "## Quelle\n\n" + source.provider + " · " + source.url + "\n\n"
+            if let publisher = source.publisher { output += "Herausgeber: " + publisher + "\n\n" }
+            if let published = source.publishedOn { output += "Veröffentlicht: " + published + "\n\n" }
+            output += "Importiert: " + ISO8601DateFormatter().string(from: source.importedAt) + "\n\n"
+            if let language = source.language { output += "Audiosprache: " + language + "\n\n" }
+        }
         if !record.refinedText.isEmpty { output += "## Auswertung\n\n" + record.refinedText + "\n\n" }
         if !record.notes.isEmpty { output += "## Notizen\n\n" + record.notes + "\n\n" }
         if !record.segments.isEmpty {

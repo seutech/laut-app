@@ -14,9 +14,9 @@ final class AppStore: ObservableObject {
     @Published var settings = AppSettings()
     @Published var vocabulary: [VocabularyEntry] = []
     @Published var status = "Bereit · lokal auf deinem Mac"
-    @Published var busy = false { didSet { scheduleSearch() } }
+    @Published var busy = false { didSet { scheduleSearch(); if !busy { Task { @MainActor [weak self] in self?.runImportQueue() } } } }
     @Published var error: String?
-    @Published var isRecording = false { didSet { scheduleSearch() } }
+    @Published var isRecording = false { didSet { scheduleSearch(); if !isRecording { Task { @MainActor [weak self] in self?.runImportQueue() } } } }
     @Published var playerTime: Double = 0
     @Published var playing = false
     @Published var playbackDuration: Double = 0
@@ -55,9 +55,12 @@ final class AppStore: ObservableObject {
     var task: Task<Void, Never>?
     var player: AVPlayer?
     private var playbackID: UUID?
-    private var importTask: Task<Void, Never>?
-    private var importQueue: [URL] = []
-    private let importer = FileImporter()
+    let importer = FileImporter()
+    let mediaDownloader = MediaDownloader()
+    @Published var importJobs: [ImportJob] = []
+    @Published var queueError: String?
+    @Published var activeImportID: UUID?
+    var importJobTask: Task<Void, Never>?
     private var timer: Timer?
     var recorder: AVAudioRecorder?
     var captureURL: URL?
@@ -67,7 +70,6 @@ final class AppStore: ObservableObject {
     var meeting: MeetingCapture?
     var meetingDirectory: URL?
     var shortcuts: GlobalShortcuts?
-    @Published private(set) var pending: [UUID] = []
 
     init() {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Laut")
@@ -92,6 +94,8 @@ final class AppStore: ObservableObject {
             settings.diarizationInstalled = ["Segmentation.mlmodelc", "Embedding.mlmodelc", "PldaRho.mlmodelc", "FBank.mlmodelc", "plda-parameters.json"].allSatisfy { FileManager.default.fileExists(atPath: speakers.appendingPathComponent($0).path) }
         }
         selected = recordings.first?.id
+        do { importJobs = try jobStore.load() }
+        catch { queueError = "Auftragsliste konnte nicht gelesen werden; Originaldatei bleibt erhalten: " + error.localizedDescription }
         if !settings.runtimeDirectory.isEmpty {
             for model in [EngineKind.parakeet, .qwen] where settings.modelPaths[model.rawValue] == nil {
                 let repo = URL(fileURLWithPath: settings.runtimeDirectory).appendingPathComponent("models/huggingface/models--" + model.modelID.replacingOccurrences(of: "/", with: "--"))
@@ -216,45 +220,16 @@ final class AppStore: ObservableObject {
         panel.allowedContentTypes = [.audio, .movie]; panel.canChooseDirectories = false
         guard panel.runModal() == .OK else { return }; importFiles(panel.urls)
     }
-    func importFiles(_ urls: [URL]) {
-        importQueue += urls
-        section = "library"
-        guard importTask == nil else { return }
-        importing = true
-        importTask = Task {
-            defer {
-                importing = false; importTask = nil; importStatus = ""
-                if !importQueue.isEmpty { importFiles([]) }
-            }
-            var failures: [String] = []
-            while !importQueue.isEmpty && !Task.isCancelled {
-                let url = importQueue.removeFirst()
-                importStatus = "\(url.lastPathComponent) prüfen …"
-                do {
-                    let item = try await importer.importFile(url, root: library.root) { [weak self] fraction in
-                        Task { @MainActor in self?.importStatus = "\(url.lastPathComponent) kopieren · \(Int(fraction * 100)) %" }
-                    }
-                    recordings.insert(item, at: 0); selected = item.id
-                } catch {
-                    if Task.isCancelled { break }
-                    failures.append(url.lastPathComponent + ": " + error.localizedDescription)
-                }
-            }
-            if !failures.isEmpty { error = failures.joined(separator: "\n") }
-        }
-    }
-    func cancelImport() { importQueue = []; importTask?.cancel() }
+    func importFiles(_ urls: [URL]) { addFileJobs(urls) }
+    func cancelImport() { pauseImportQueue() }
     func newNote() {
         let item = Recording(title: "Schnellnotiz", kind: .note)
         do { try library.save(item); recordings.insert(item, at: 0); selected = item.id; section = "library" }
         catch { self.error = error.localizedDescription }
     }
     func transcribeAll() {
-        guard !busy else { return }
-        pending = recordings.filter { $0.audioFilename != nil && $0.segments.isEmpty }.map(\.id).reversed()
-        nextJob()
+        addTranscriptionJobs(recordings.filter { $0.audioFilename != nil && $0.segments.isEmpty }.map(\.id).reversed())
     }
-    private func nextJob() { guard !pending.isEmpty else { return }; let id = pending.removeFirst(); transcribe(id) }
     func transcribe(_ id: UUID, pasteTo target: NSRunningApplication? = nil, anchor: TextInsertion.Anchor? = nil) {
         guard !busy, !isRecording, let item = recordings.first(where: { $0.id == id }), let source = library.audioURL(item) else { return }
         // Re-running creates a separate version so no correction or source result is overwritten.
@@ -263,7 +238,7 @@ final class AppStore: ObservableObject {
             task = Task {
                 var copy: Recording?
                 do {
-                    copy = try await importer.importFile(source, root: library.root, title: item.title + " · neue Transkription") { [weak self] fraction in
+                    copy = try await importer.importFile(source, root: library.root, title: item.title + " · neue Transkription", metadata: item.source) { [weak self] fraction in
                         Task { @MainActor in self?.status = "Neue Version kopieren · \(Int(fraction * 100)) %" }
                     }
                     try Task.checkCancellation()
@@ -281,10 +256,10 @@ final class AppStore: ObservableObject {
         }
         let config = settings, terms = vocabulary
         busy = true; status = "Audio vorbereiten …"
-        guard update(id, { $0.state = .processing; $0.error = nil }) else { busy = false; pending = []; return }
+        guard update(id, { $0.state = .processing; $0.error = nil }) else { busy = activeImportID != nil; return }
         task = Task {
             let temp = library.folder(id).appendingPathComponent("processing.wav")
-            defer { try? FileManager.default.removeItem(at: temp); busy = false; task = nil; nextJob() }
+            defer { try? FileManager.default.removeItem(at: temp); busy = activeImportID != nil; task = nil }
             do {
                 let start = Date()
                 let duration = try await AudioFiles.convert(source, to: temp)
@@ -385,8 +360,9 @@ final class AppStore: ObservableObject {
         }
     }
     func cancel() {
+        if activeImportID != nil { pauseImportQueue(); return }
         automaticPreparation = false; preparedModelKey = nil; modelStatus = "Modell nicht vorbereitet"
-        pending = []; task?.cancel(); engine.runner.cancel(); engine.warmWorker.stop(); status = "Abbruch angefordert …"
+        task?.cancel(); engine.runner.cancel(); engine.warmWorker.stop(); status = "Abbruch angefordert …"
     }
     func chooseDirectory(_ apply: (String) -> Void) {
         let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false

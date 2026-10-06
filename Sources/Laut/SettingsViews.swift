@@ -213,6 +213,7 @@ struct PreferencesView: View {
                         Button("Bedienungshilfen erlauben") { _ = TextInsertion.permitted() }
                     }.padding(12)
                 }
+                LinkImportSettings()
                 MarkdownArchiveSettings()
                 GroupBox("Lokale Speicherung") {
                     VStack(alignment: .leading, spacing: 12) {

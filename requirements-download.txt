@@ -1,0 +1,2 @@
+# EJS is installed with the compatible version required by this release.
+yt-dlp[default]==2026.08.19

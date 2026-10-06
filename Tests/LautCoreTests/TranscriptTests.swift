@@ -31,6 +31,7 @@ struct TranscriptTests {
         try await SearchTests.run()
         try await StabilityTests.run()
         try await MarkdownArchiveTests.run()
+        try ImportJobTests.run()
     }
     func testDiarizationRespectsManualSpeakerAndTextEdits() {
         var locked = Segment(start: 0, end: 2, text: "Mein Name", speakerID: "person")

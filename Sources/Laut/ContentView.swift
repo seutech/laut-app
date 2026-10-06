@@ -15,6 +15,7 @@ struct ContentView: View {
                 }.padding(.top, 16)
                 VStack(spacing: 6) {
                     nav("Bibliothek", symbol: "rectangle.stack", key: "library")
+                    nav("Quellen & Aufträge", symbol: "tray.and.arrow.down", key: "jobs")
                     nav("Suche", symbol: "magnifyingglass", key: "search")
                     nav("Wörterbuch", symbol: "text.book.closed", key: "vocabulary")
                     nav("Modelle", symbol: "cpu", key: "models")
@@ -49,6 +50,7 @@ struct ContentView: View {
             VStack(spacing: 0) {
                 Group {
                     switch store.section {
+                    case "jobs": ImportJobsView()
                     case "search": SearchView()
                     case "vocabulary": VocabularyView()
                     case "models": ModelsView()
@@ -67,7 +69,7 @@ struct ContentView: View {
                         Text(store.modelStatus).font(.caption2).foregroundStyle(store.modelReady ? .teal : .secondary)
                     }
                     Spacer()
-                    if !store.pending.isEmpty { Text("\(store.pending.count) Dateien warten").font(.caption).foregroundStyle(.secondary) }
+                    if store.waitingJobs > 0 { Text("\(store.waitingJobs) Aufträge warten").font(.caption).foregroundStyle(.secondary) }
                     if store.busy { Button("Abbrechen") { store.cancel() }.controlSize(.small) }
                     if store.isRecording { Button("Aufnahme beenden") { store.stopRecording() }.tint(.red) }
                 }.padding(12).background(.bar)
@@ -89,6 +91,7 @@ struct ContentView: View {
         .toolbar {
             ToolbarItemGroup {
                 Button { store.chooseFiles() } label: { Label("Importieren", systemImage: "plus") }
+                Button { store.section = "jobs" } label: { Label("Link", systemImage: "link") }
                 Button { store.toggleRecording(kind: .meeting) } label: { Label(store.isRecording ? "Stoppen" : "Mikrofon", systemImage: store.isRecording ? "stop.circle.fill" : "mic") }.disabled(store.busy)
                 Button { store.startMeeting() } label: { Label("Meeting", systemImage: "person.2.wave.2") }.disabled(store.busy || store.isRecording).help("Mikrofon und Systemaudio aufnehmen")
             }
@@ -169,10 +172,14 @@ struct RecordingView: View {
                     Button("Eintrag löschen …", role: .destructive) { confirmDelete = true }.disabled(store.busy)
                 } label: { Label("Export & mehr", systemImage: "square.and.arrow.up") }
             }
+            RecordingSourceView(record: record)
             if record.kind != .note {
                 HStack {
                     Picker("Modell", selection: $store.settings.engine) { ForEach(EngineKind.allCases) { Text($0.label).tag($0) } }.frame(maxWidth: 280).disabled(store.busy || store.isRecording)
-                    Button(record.segments.isEmpty ? "Transkribieren" : "Neue Version") { store.transcribe(record.id) }.buttonStyle(.borderedProminent).disabled(store.busy || store.isRecording || record.audioFilename == nil)
+                    Button(record.segments.isEmpty ? "Transkribieren" : "Neue Version") {
+                        if record.segments.isEmpty { store.addTranscriptionJobs([record.id]) }
+                        else { store.transcribe(record.id) }
+                    }.buttonStyle(.borderedProminent).disabled(store.busy || store.isRecording || record.audioFilename == nil)
                     if record.segments.isEmpty { Button("Alle offenen Dateien") { store.transcribeAll() }.disabled(store.busy || store.isRecording) }
                     Spacer()
                 }

@@ -29,7 +29,8 @@ enum FileWorkflow {
         var didCancel = false
         do { _ = try await cancelled.value } catch is CancellationError { didCancel = true }
         let folders = try FileManager.default.contentsOfDirectory(at: library.root, includingPropertiesForKeys: nil)
-        guard didCancel, folders.count == 1, FileManager.default.contentsEqual(atPath: source.path, andPath: copied.path) else {
+        let staging = try FileManager.default.contentsOfDirectory(at: library.root.appendingPathComponent(".import-staging"), includingPropertiesForKeys: nil)
+        guard didCancel, folders.filter({ UUID(uuidString: $0.lastPathComponent) != nil }).count == 1, staging.isEmpty, FileManager.default.contentsEqual(atPath: source.path, andPath: copied.path) else {
             throw LocalEngineError("Cancelled import left partial files or changed its source")
         }
         print("Invalid file rejected; cancelled import cleaned up")

@@ -4,7 +4,7 @@ import LautCore
 
 public actor FileImporter {
     public init() {}
-    public func importFile(_ source: URL, root: URL, title: String? = nil, progress: @escaping @Sendable (Double) -> Void) async throws -> Recording {
+    public func importFile(_ source: URL, root: URL, title: String? = nil, recordingID: UUID? = nil, metadata: SourceMetadata? = nil, progress: @escaping @Sendable (Double) -> Void) async throws -> Recording {
         guard source.isFileURL else { throw LocalEngineError("Bitte eine lokale Audio- oder Videodatei auswählen.") }
         let access = source.startAccessingSecurityScopedResource()
         defer { if access { source.stopAccessingSecurityScopedResource() } }
@@ -14,11 +14,17 @@ public actor FileImporter {
         guard try await !asset.loadTracks(withMediaType: .audio).isEmpty else { throw LocalEngineError("Die Datei enthält keine unterstützte Audiospur.") }
         let duration = try await asset.load(.duration).seconds
         try Task.checkCancellation()
-        let library = try Library(root: root)
+        let library = try Library(root: root.appendingPathComponent(".import-staging"))
         var recording = Recording(title: title ?? source.deletingPathExtension().lastPathComponent)
-        recording.audioFilename = "source." + source.pathExtension.lowercased()
+        if let recordingID { recording.id = recordingID }
+        recording.source = metadata
+        recording.audioFilename = (MarkdownArchive.filename(recording) as NSString).deletingPathExtension + "." + source.pathExtension.lowercased()
         recording.duration = duration.isFinite ? max(0, duration) : 0
         let folder = library.folder(recording.id)
+        let destination = root.appendingPathComponent(recording.id.uuidString)
+        guard !FileManager.default.fileExists(atPath: destination.path) else { throw LocalEngineError("Importordner existiert bereits. Bitte den gespeicherten Auftrag prüfen.") }
+        // Only this job's incomplete staging copy is disposable. Published library entries are never replaced.
+        if FileManager.default.fileExists(atPath: folder.path) { try FileManager.default.removeItem(at: folder) }
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         do {
             let target = folder.appendingPathComponent(recording.audioFilename!)
@@ -34,7 +40,8 @@ public actor FileImporter {
             }
             guard copied == size else { throw LocalEngineError("Die Datei hat sich während des Kopierens verändert. Bitte erneut importieren.") }
             try output.synchronize(); try Task.checkCancellation()
-            try library.save(recording); progress(1)
+            try library.save(recording)
+            try FileManager.default.moveItem(at: folder, to: destination); progress(1)
             return recording
         } catch { try? FileManager.default.removeItem(at: folder); throw error }
     }
