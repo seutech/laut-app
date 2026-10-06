@@ -176,6 +176,12 @@ struct RecordingView: View {
                     if record.segments.isEmpty { Button("Alle offenen Dateien") { store.transcribeAll() }.disabled(store.busy || store.isRecording) }
                     Spacer()
                 }
+                if store.settings.engine == .phonon && store.settings.language != "en" {
+                    HStack(alignment: .top) {
+                        Text("Phonon ließ im deutschen Gesprächstest ganze Sätze aus. Für deutsche Gespräche empfehlen wir Parakeet v3.").font(.caption).foregroundStyle(.secondary)
+                        Button("Modelle ansehen") { store.section = "models" }.controlSize(.small)
+                    }
+                }
                 HStack {
                     Toggle("Sprecher automatisch erkennen", isOn: Binding(get: { store.settings.speakerDetectionEnabled }, set: { store.settings.speakerDetectionEnabled = $0; store.saveSettings() }))
                         .toggleStyle(.switch).controlSize(.small).disabled(store.busy || store.isRecording)
@@ -283,7 +289,7 @@ struct RecordingView: View {
                 }
                 .task(id: store.searchDestination?.id) {
                     guard let hit = store.searchDestination, hit.passage.recordingID == record.id, let time = hit.passage.start else { return }
-                    let segment = record.segments.first { $0.start == time }
+                    let segment = record.segments.first { $0.id == hit.passage.segmentID } ?? record.segments.first { $0.start == time }
                     let target = editingTranscript ? segment?.id : visibleParagraphs.first { $0.segments.contains { $0.id == segment?.id } }?.id
                     if let target { proxy.scrollTo(target, anchor: .center) }
                 }

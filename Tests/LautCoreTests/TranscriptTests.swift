@@ -29,6 +29,7 @@ struct TranscriptTests {
         suite.testDictionaryCorrectionDoesNotHideInitialSpeakerChanges()
         print("22 core checks passed")
         try await SearchTests.run()
+        try await StabilityTests.run()
     }
     func testDiarizationRespectsManualSpeakerAndTextEdits() {
         var locked = Segment(start: 0, end: 2, text: "Mein Name", speakerID: "person")
@@ -47,8 +48,11 @@ struct TranscriptTests {
         let encoder = JSONEncoder(), decoder = JSONDecoder()
         var old = try JSONSerialization.jsonObject(with: encoder.encode(defaults)) as! [String: Any]
         old.removeValue(forKey: "automaticSpeakerDetection")
+        old["engine"] = "phonon"
         var migrated = try decoder.decode(AppSettings.self, from: JSONSerialization.data(withJSONObject: old))
         XCTAssertTrue(migrated.speakerDetectionEnabled)
+        XCTAssertEqual(migrated.engine, .phonon)
+        XCTAssertEqual(defaults.engine, .parakeet)
         migrated.speakerDetectionEnabled = false
         XCTAssertTrue(try !decoder.decode(AppSettings.self, from: encoder.encode(migrated)).speakerDetectionEnabled)
     }

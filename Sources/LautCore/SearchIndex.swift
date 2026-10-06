@@ -22,33 +22,38 @@ public struct SearchPassage: Codable, Identifiable, Sendable {
     public var source: String
     public var speaker: String
     public var start: Double?
+    public var segmentID: UUID?
     public var date: Double
     public var fingerprint: String
     public var embeddingText: String { title + "\n" + speaker + "\n" + text }
     public static func passages(_ recordings: [Recording]) -> [SearchPassage] {
         var result: [SearchPassage] = []
         for r in recordings {
-            func append(_ text: String, source: String, key: String, speaker: String = "", start: Double? = nil) {
+            func append(_ text: String, source: String, key: String, speaker: String = "", start: Double? = nil, segment: Segment? = nil) {
                 // Bound index units without cutting a Unicode scalar or losing trailing text.
                 let words = text.split(whereSeparator: \.isWhitespace)
-                var chunks: [String] = [], chunk = ""
+                var chunks: [(text: String, offset: Int)] = [], chunk = "", offset = 0
+                let timed = segment.map(TranscriptLayout.wordRanges) ?? []
                 for word in words {
-                    if chunk.count + word.count > 900 && !chunk.isEmpty { chunks.append(chunk); chunk = "" }
+                    if chunk.count + word.count > 900 && !chunk.isEmpty { chunks.append((chunk, offset)); chunk = "" }
+                    if chunk.isEmpty { offset = NSRange(word.startIndex..<word.endIndex, in: text).location }
                     chunk += (chunk.isEmpty ? "" : " ") + word
                 }
-                if !chunk.isEmpty { chunks.append(chunk) }
-                for (n, body) in chunks.enumerated() {
+                if !chunk.isEmpty { chunks.append((chunk, offset)) }
+                for (n, chunk) in chunks.enumerated() {
+                    let body = chunk.text
+                    let position = timed.first { NSLocationInRange(chunk.offset, $0.range) }?.time ?? start
                     let id = "\(r.id.uuidString)/\(key)/\(n)"
-                    let value = [r.title, body, speaker, source, start.map(String.init(describing:)) ?? "", String(r.createdAt.timeIntervalSince1970)].joined(separator: "\u{0}")
+                    let value = ["passage-v2", r.title, body, speaker, source, segment?.id.uuidString ?? "", position.map(String.init(describing:)) ?? "", String(r.createdAt.timeIntervalSince1970)].joined(separator: "\u{0}")
                     let hash = SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
-                    result.append(Self(id: id, recordingID: r.id, title: r.title, text: body, source: source, speaker: speaker, start: start, date: r.createdAt.timeIntervalSince1970, fingerprint: hash))
+                    result.append(Self(id: id, recordingID: r.id, title: r.title, text: body, source: source, speaker: speaker, start: position, segmentID: segment?.id, date: r.createdAt.timeIntervalSince1970, fingerprint: hash))
                 }
             }
             append(r.title, source: "Titel", key: "title")
             append(r.notes, source: "Notizen", key: "notes")
             append(r.refinedText, source: "Text-KI", key: "refined")
             for segment in r.segments {
-                append(segment.text, source: "Transkript", key: segment.id.uuidString, speaker: r.speakerName(segment.speakerID), start: segment.start)
+                append(segment.text, source: "Transkript", key: segment.id.uuidString, speaker: r.speakerName(segment.speakerID), start: segment.start, segment: segment)
             }
         }
         return result
@@ -80,14 +85,43 @@ public actor SearchIndex {
     deinit { if let db { sqlite3_close(db) } }
     private func open() throws {
         guard db == nil else { return }
-        guard sqlite3_open(url.path, &db) == SQLITE_OK else { throw failure() }
-        try execute("PRAGMA journal_mode=WAL")
-        try execute("CREATE TABLE IF NOT EXISTS passages(id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, payload BLOB NOT NULL)")
-        try execute("CREATE VIRTUAL TABLE IF NOT EXISTS fulltext USING fts5(id UNINDEXED, title, body, speaker, tokenize='unicode61 remove_diacritics 2')")
-        try execute("CREATE TABLE IF NOT EXISTS vectors(id TEXT, model TEXT, fingerprint TEXT, vector BLOB, PRIMARY KEY(id,model))")
-        let statement = try prepare("SELECT payload FROM passages"); defer { sqlite3_finalize(statement) }
-        while sqlite3_step(statement) == SQLITE_ROW {
-            let p = try JSONDecoder().decode(SearchPassage.self, from: data(statement, 0)); passages[p.id] = p
+        do {
+            guard sqlite3_open(url.path, &db) == SQLITE_OK else { throw failure() }
+            sqlite3_busy_timeout(db, 2000)
+            try execute("PRAGMA journal_mode=WAL")
+            try execute("CREATE TABLE IF NOT EXISTS passages(id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, payload BLOB NOT NULL)")
+            try execute("CREATE VIRTUAL TABLE IF NOT EXISTS fulltext USING fts5(id UNINDEXED, title, body, speaker, tokenize='unicode61 remove_diacritics 2')")
+            try execute("CREATE TABLE IF NOT EXISTS vectors(id TEXT, model TEXT, fingerprint TEXT, vector BLOB, PRIMARY KEY(id,model))")
+            let statement = try prepare("SELECT payload FROM passages"); defer { sqlite3_finalize(statement) }
+            var loaded: [String: SearchPassage] = [:]
+            while try row(statement) {
+                let p = try JSONDecoder().decode(SearchPassage.self, from: data(statement, 0)); loaded[p.id] = p
+            }
+            passages = loaded
+        } catch {
+            if let db { sqlite3_close(db) }; db = nil; passages = [:]
+            throw error
+        }
+    }
+    /// Rebuild only the derived database; the caller resynchronizes it from the unchanged library.
+    public func reset() throws {
+        try Task.checkCancellation()
+        if let db {
+            guard sqlite3_close(db) == SQLITE_OK else { throw failure() }
+            self.db = nil
+        }
+        passages = [:]
+        for suffix in ["", "-wal", "-shm"] {
+            let file = URL(fileURLWithPath: url.path + suffix)
+            if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
+        }
+    }
+    private func row(_ statement: OpaquePointer) throws -> Bool {
+        try Task.checkCancellation()
+        switch sqlite3_step(statement) {
+        case SQLITE_ROW: return true
+        case SQLITE_DONE: return false
+        default: throw failure()
         }
     }
     private func failure() -> IndexError { IndexError(message: "Suchindex: " + (db.map { String(cString: sqlite3_errmsg($0)) } ?? "nicht erreichbar")) }
@@ -113,6 +147,7 @@ public actor SearchIndex {
         try execute("BEGIN IMMEDIATE")
         do {
             for id in passages.keys where next[id] == nil {
+                try Task.checkCancellation()
                 try execute("DELETE FROM fulltext WHERE id=?", [id]); try execute("DELETE FROM passages WHERE id=?", [id]); try execute("DELETE FROM vectors WHERE id=?", [id])
             }
             for p in next.values where passages[p.id]?.fingerprint != p.fingerprint {
@@ -123,6 +158,7 @@ public actor SearchIndex {
                 try execute("INSERT INTO fulltext VALUES(?,?,?,?)", [p.id, p.title, p.text, p.speaker])
                 try execute("DELETE FROM vectors WHERE id=?", [p.id])
             }
+            try Task.checkCancellation()
             try execute("COMMIT"); passages = next
         } catch { try? execute("ROLLBACK"); throw error }
     }
@@ -130,7 +166,7 @@ public actor SearchIndex {
         try open()
         let s = try prepare("SELECT id,fingerprint FROM vectors WHERE model=?"); defer { sqlite3_finalize(s) }; bind([model], to: s)
         var ready: [String: String] = [:]
-        while sqlite3_step(s) == SQLITE_ROW { ready[string(s, 0)] = string(s, 1) }
+        while try row(s) { ready[string(s, 0)] = string(s, 1) }
         return passages.values.filter { $0.source != "Titel" && ready[$0.id] != $0.fingerprint }.sorted { $0.id < $1.id }
     }
     public func storeVectors(_ vectors: [[Float]], for items: [SearchPassage], model: String) throws {
@@ -139,9 +175,11 @@ public actor SearchIndex {
         try open(); try execute("BEGIN IMMEDIATE")
         do {
             for (p, vector) in zip(items, vectors) where passages[p.id]?.fingerprint == p.fingerprint {
+                try Task.checkCancellation()
                 let json = String(decoding: try JSONEncoder().encode(vector), as: UTF8.self)
                 try execute("INSERT OR REPLACE INTO vectors VALUES(?,?,?,?)", [p.id, model, p.fingerprint, json])
             }
+            try Task.checkCancellation()
             try execute("COMMIT")
         } catch { try? execute("ROLLBACK"); throw error }
     }
@@ -156,7 +194,7 @@ public actor SearchIndex {
         if mode != .semantic && !expression.isEmpty {
             let s = try prepare("SELECT id FROM fulltext WHERE fulltext MATCH ? ORDER BY bm25(fulltext,0,3,1,2),id")
             defer { sqlite3_finalize(s) }; bind([expression], to: s)
-            while sqlite3_step(s) == SQLITE_ROW {
+            while try row(s) {
                 let id = string(s, 0)
                 if let p = passages[id], filter.allows(p) { keyword.append(id); if keyword.count == 100 { break } }
             }
@@ -164,7 +202,7 @@ public actor SearchIndex {
         if mode != .fullText, let vector, !vector.isEmpty, vector.allSatisfy(\.isFinite) {
             let s = try prepare("SELECT id,fingerprint,vector FROM vectors WHERE model=?"); defer { sqlite3_finalize(s) }; bind([model], to: s)
             var scores: [(String, Float)] = []
-            while sqlite3_step(s) == SQLITE_ROW {
+            while try row(s) {
                 try Task.checkCancellation()
                 let id = string(s, 0)
                 guard let p = passages[id], filter.allows(p), p.fingerprint == string(s, 1) else { continue }

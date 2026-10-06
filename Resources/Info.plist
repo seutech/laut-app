@@ -7,8 +7,8 @@
 <key>CFBundleDisplayName</key><string>Laut</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleIconFile</key><string>Laut.icns</string>
-<key>CFBundleShortVersionString</key><string>0.1.6</string>
-<key>CFBundleVersion</key><string>7</string>
+<key>CFBundleShortVersionString</key><string>0.1.7</string>
+<key>CFBundleVersion</key><string>8</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>NSHighResolutionCapable</key><true/>
 <key>NSMicrophoneUsageDescription</key><string>Laut nimmt dein Mikrofon nur nach dem Start einer Aufnahme auf und verarbeitet das Audio lokal.</string>

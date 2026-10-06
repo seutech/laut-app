@@ -41,7 +41,7 @@ cd laut-app
 open dist/Laut.app
 ```
 
-In **Modelle**, download a speech model. Downloads connect to Hugging Face/GitHub as needed; no login is required. Laut automatically loads the selected installed model at startup and after a model change, then warms its inference kernels using a short, generated test signal (never microphone or user audio). Wait for **Phonon-2 bereit** (or the selected model's name) before recording. Initial preparation can still take tens of seconds; it happens before the first dictation instead of after it. **Gewähltes Modell vorladen** retries preparation after cancellation or manual unloading. Import a file and click **Transkribieren**. Install the speaker models once under **Modelle**; speaker analysis then runs automatically after transcription. You can also run it later from the **Sprecher** tab.
+In **Modelle**, download a speech model. New installations select Parakeet v3 by default for German conversations; existing model selections are preserved. Downloads connect to Hugging Face/GitHub as needed; no login is required. Laut automatically loads the selected installed model at startup and after a model change, then warms its inference kernels using a short, generated test signal (never microphone or user audio). Wait for **Phonon-2 bereit** (or the selected model's name) before recording. Initial preparation can still take tens of seconds; it happens before the first dictation instead of after it. **Gewähltes Modell vorladen** retries preparation after cancellation or manual unloading. Import a file and click **Transkribieren**. Install the speaker models once under **Modelle**; speaker analysis then runs automatically after transcription. You can also run it later from the **Sprecher** tab.
 
 Automatic speaker detection defaults to on for new and existing installations. The switch below the transcription controls (also in Settings) persists across restarts. The transcript is saved before speaker analysis starts: if that stage fails, is cancelled or lacks models, the text remains available with an explanatory message. Missing speaker models are never downloaded silently. The speech model stays warm during the sequential speaker stage. Speaker-analysis time is shown separately.
 
@@ -67,7 +67,7 @@ An arbitrary `.onnx`, `.bin` or `.gguf` file is not interchangeable with these b
 
 Open **Suche** or type in the sidebar. **Volltext** requires no embedding model or running Python worker. It uses accent-insensitive prefix matching and requires all entered words; punctuation is treated as a separator, not SQL/FTS syntax. This is not an exact-phrase/operator query language.
 
-In **Modelle → Suche**, explicitly download Multilingual E5 Small (about 495 MB including tokenizer) or Base (about 1.1 GB). Choose **Bedeutung** or **Hybrid** in Search. Small is the tested starting point for an M1. A completed model already in Laut's cache is discovered without downloading. The first index/model load takes time; keyword hits stay available during preparation. Only changed sections need new embeddings. Titles remain searchable as metadata but do not get standalone semantic vectors. New model snapshots use separate vector namespaces; interrupted indexing resumes from completed batches, and incomplete semantic results are not presented as a complete index.
+In **Modelle → Suche**, explicitly download Multilingual E5 Small (about 495 MB including tokenizer) or Base (about 1.1 GB). Choose **Bedeutung** or **Hybrid** in Search. Small is the tested starting point for an M1. A completed model already in Laut's cache is discovered without downloading. Use **Index neu aufbauen** to regenerate a damaged or outdated derived index without changing recordings, notes or transcripts. The first index/model load takes time; keyword hits stay available during preparation. Only changed sections need new embeddings. Titles remain searchable as metadata but do not get standalone semantic vectors. When a long transcript segment becomes several search passages, each passage uses its first available word timestamp; edited text without trustworthy alignment falls back to the segment start. New model snapshots use separate vector namespaces; interrupted indexing resumes from completed batches, and incomplete semantic results are not presented as a complete index.
 
 Embedding inference uses a separate network-blocked worker, CPU execution with two Torch threads, bounded batches and normalized E5 vectors. It pauses during recording/transcription/other model operations and unloads after 45 seconds of inactivity or when switching to full-text search. Searches query the existing index without rebuilding it on every keystroke. Semantic similarity indicates relevance, not factual correctness or a calibrated confidence percentage. This first implementation scans locally stored vectors; very large libraries still need performance evaluation.
 
@@ -144,3 +144,19 @@ swift run LautDiagnostics --search-checks --model /absolute/path/to/multilingual
 .runtime/venv/bin/python -m unittest discover -s Tests/Python -p 'test_*.py'
 .runtime/venv/bin/python Tests/Python/check_embeddings.py /absolute/path/to/multilingual-e5-small
 ```
+
+### 0.1.7 stability pass
+
+Search requests now invalidate answer eligibility immediately, including the typing debounce interval. Results and answers cannot cross query/filter/model/library revisions. SQLite read failures are surfaced instead of becoming silently partial result sets, a failed index open closes its handle, and the derived index can be explicitly reset. Long passages retain segment identity and use available word timestamps for audio navigation. Old cached passage JSON remains readable and is refreshed on synchronization.
+
+Three newly generated German fixtures completed the offline import → ASR → optional speakers → correction → save/reopen → undo/redo → export checks. Phonon ASR took 0.20 seconds for a 10-second clip, 0.93 seconds for a 55.93-second two-voice clip, and 4.08 seconds for a 256.20-second repeated conversation. Cold preparation was 11.5–12.9 seconds; speaker analysis took 2.2–2.5 seconds on the two longer fixtures and identified two speakers. These timings exclude one another and are not real-meeting measurements.
+
+**A technical success did not imply a complete transcript.** Against the known 106-word reference for the two-voice fixture, Phonon returned only 58 words and omitted several sentences from the second voice. Its raw model text already lacked those sentences; Laut's word-timestamp rendering did not cause the loss. Case/punctuation-normalized word error rate on this single synthetic fixture was 47.2% for Phonon and 1.9% for Parakeet (107 output words, one incorrectly rendered term). Parakeet ASR took 1.69 seconds, with 3.96 seconds of preparation. This narrow result motivates the German model recommendation; it is not a representative accuracy benchmark. No personal recordings were used. Real conversation evaluation and interactive UI checks remain outstanding.
+
+A local reference comparison is available without printing transcript contents:
+
+```sh
+.runtime/venv/bin/python Tests/Python/check_transcript_quality.py --reference /path/to/reference.txt --transcript /path/to/transcript.txt --max-wer 0.1
+```
+
+The threshold is optional and must be chosen for the particular evaluation. A saved transcript and successful pipeline checks alone are insufficient evidence of recognition quality.

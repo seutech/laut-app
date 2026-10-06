@@ -39,6 +39,7 @@ final class AppStore: ObservableObject {
     @Published var searchDestination: SearchHit?
     @Published var downloadProgress = ""
     var downloadGeneration = UUID()
+    var searchState = SearchState()
     var searchRevision = 0
     var indexedSearchRevision: Int?
     @Published var libraryAnswer = ""

@@ -90,15 +90,15 @@ public enum EngineKind: String, Codable, CaseIterable, Identifiable, Sendable {
     }
     public var detail: String {
         switch self {
-        case .phonon: return "164 MB Download · Fokus Englisch · Deutsch mit Parakeet vergleichen"
-        case .parakeet: return "25 europäische Sprachen, auch Deutsch · ca. 1–3 GB"
+        case .phonon: return "164 MB Download · Fokus Englisch · im deutschen Zweistimmentest wurden ganze Sätze ausgelassen"
+        case .parakeet: return "Empfohlen für deutsche Gespräche · 25 europäische Sprachen · ca. 1–3 GB"
         case .qwen: return "Experimentell · mehrsprachig · ca. 1 GB · nur Abschnittszeitmarken"
         }
     }
 }
 
 public struct AppSettings: Codable, Sendable {
-    public var engine: EngineKind = .phonon
+    public var engine: EngineKind = .parakeet
     public var modelPaths: [String: String] = [:]
     public var runtimeDirectory: String = ""
     public var language: String = "de"
