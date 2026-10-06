@@ -213,6 +213,7 @@ struct PreferencesView: View {
                         Button("Bedienungshilfen erlauben") { _ = TextInsertion.permitted() }
                     }.padding(12)
                 }
+                MarkdownArchiveSettings()
                 GroupBox("Lokale Speicherung") {
                     VStack(alignment: .leading, spacing: 12) {
                         Toggle("Audio von Diktaten behalten", isOn: $store.settings.keepDictationAudio)

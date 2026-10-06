@@ -30,6 +30,7 @@ struct TranscriptTests {
         print("22 core checks passed")
         try await SearchTests.run()
         try await StabilityTests.run()
+        try await MarkdownArchiveTests.run()
     }
     func testDiarizationRespectsManualSpeakerAndTextEdits() {
         var locked = Segment(start: 0, end: 2, text: "Mein Name", speakerID: "person")

@@ -7,7 +7,7 @@ import LautAudio
 
 @MainActor
 final class AppStore: ObservableObject {
-    @Published var recordings: [Recording] = [] { didSet { searchRevision += 1; scheduleSearch() } }
+    @Published var recordings: [Recording] = [] { didSet { searchRevision += 1; scheduleSearch(); scheduleMarkdownArchive() } }
     @Published var selected: UUID? { didSet { if selected != oldValue { stopPlayback() } } }
     @Published var section = "library"
     @Published var search = "" { didSet { scheduleSearch(show: true) } }
@@ -28,6 +28,9 @@ final class AppStore: ObservableObject {
     private var observedModelKey: String?
     private var automaticPreparation = true
     let library: Library
+    let markdownArchive = MarkdownArchive()
+    var markdownTask: Task<Void, Never>?
+    @Published var markdownStatus = ""
     let searchIndex: SearchIndex
     let embeddings: EmbeddingEngine
     @Published var searchHits: [SearchHit] = []
@@ -132,6 +135,7 @@ final class AppStore: ObservableObject {
         observedModelKey = selectedModelKey
         prepareSelectedModel()
         scheduleSearch()
+        scheduleMarkdownArchive()
     }
     private var selectedModelKey: String {
         [settings.runtimeDirectory, settings.engine.rawValue, settings.modelPaths[settings.engine.rawValue] ?? ""].joined(separator: "\n")
@@ -175,6 +179,7 @@ final class AppStore: ObservableObject {
     var modelDirectory: URL { URL(fileURLWithPath: settings.runtimeDirectory).appendingPathComponent("models/diarization") }
     var filtered: [Recording] { recordings }
     func saveSettings() {
+        scheduleMarkdownArchive()
         do { try library.saveSettings(settings) } catch { self.error = error.localizedDescription }
         if observedModelKey != selectedModelKey {
             observedModelKey = selectedModelKey; preparedModelKey = nil; automaticPreparation = true

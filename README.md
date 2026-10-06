@@ -28,6 +28,7 @@ Laut is a native SwiftUI app for Apple Silicon. Import a recording, transcribe i
 - Microphone recording and meeting recording with microphone + system audio. Transcription runs **after stopping**; live partial meeting transcripts are not implemented yet.
 - Global dictation toggle: **Control–Option–Space**. Edit selected text with the local LLM: **Control–Option–R**.
 - TXT, Markdown, SRT and JSON export. Delete audio separately while keeping the text.
+- An automatic Markdown archive with `YYYY-MM-DD TITLE.md` filenames, readable speaker paragraphs, timestamps, notes and any saved text-model result. Configure its folder or disable it in Settings.
 
 ## Build and run
 
@@ -77,6 +78,7 @@ The feature design was informed by publicly described workflows in other transcr
 
 ## Privacy and storage
 
+- The automatic Markdown archive defaults to `~/Documents/Laut/Transkripte/`. The filename date is the recording/import date in Laut, not the source file's original creation date. Existing nonempty transcripts and notes are exported too. Corrections in Laut refresh the archive after a short debounce; title changes rename Laut's unchanged copy. Duplicate names receive numeric suffixes. If an exported file was edited externally, that file is retained and a new numbered copy receives Laut's update. External Markdown edits are not imported into the app. Deleting an entry in Laut does not delete its archive copy; changing the archive folder leaves old copies in place. The hidden `.laut-archive.json` tracks ownership and hashes; damaged bookkeeping is reported rather than ignored. The archive contains text, not source audio or full edit history, so it is not a complete library backup. Laut does not upload it; choose a folder outside any OS or third-party cloud synchronization if those copies must stay exclusively on the Mac.
 - The derived `search-v1.sqlite` index (and SQLite journal files) stores local text snippets and optional embeddings beside the library. It is not encrypted separately. Deletions/edits remove or invalidate indexed content; the original recording JSON remains authoritative.
 - Recordings, transcripts, vocabulary and settings live in `~/Library/Application Support/Laut/`.
 - Each recording retains local edit history and one previous valid JSON save. If the current file cannot be read, Laut tries that backup and reports the recovery. Existing damaged data is preserved for inspection. This is local recovery, not a separate backup of your audio/library. JSON exports omit edit history; deleting an entry removes its history and backup along with it.
@@ -90,6 +92,8 @@ The feature design was informed by publicly described workflows in other transcr
 - Recording and accessibility permissions are requested only for their respective features. The app never starts recording on launch. Meeting audio is captured locally, including other applications' audible output.
 
 ## Verification
+
+There is currently no hard file-size or duration limit in the audio/video importer, but hour-long meetings and large video files have not been validated. Import retains a copy of the source file; processing also needs a temporary 16 kHz mono 16-bit WAV (approximately 115 MB per audio hour), model memory and derived data. Multiple files are transcribed sequentially. Text-model input is limited to fewer than 24,000 characters and output to 4,096 tokens; long-document summarization in multiple passes is not implemented yet.
 
 The checks are plain Swift executables, so they also work with Command Line Tools installations without XCTest:
 
@@ -160,3 +164,7 @@ A local reference comparison is available without printing transcript contents:
 ```
 
 The threshold is optional and must be chosen for the particular evaluation. A saved transcript and successful pipeline checks alone are insufficient evidence of recognition quality.
+
+### 0.1.8 Markdown archive
+
+Core archive checks cover deterministic dates, filename sanitization and UTF-8 length, metadata and content, idempotent synchronization, transcript updates, title changes, duplicate titles, externally edited files, symlinks, retained deleted entries and damaged manifests. These filesystem checks and a native app build passed; the new Settings controls still need interactive verification.

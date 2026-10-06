@@ -6,6 +6,14 @@ import LautAudio
     static func main() async throws {
         let args = CommandLine.arguments
         let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        if let input = try DiagnosticConfiguration.value("--archive-library", in: args) {
+            guard let output = try DiagnosticConfiguration.value("--archive-output", in: args) else { throw LocalEngineError("Provide --archive-output") }
+            let library = try Library(root: URL(fileURLWithPath: input))
+            let records = try library.load()
+            let report = try await MarkdownArchive().synchronize(records, directory: URL(fileURLWithPath: output))
+            print("Markdown archive: \(report.written) files written, \(report.conflicts) external edits preserved, \(library.loadWarnings.count) library warnings")
+            return
+        }
         if args.contains("--search-checks") {
             guard let path = try DiagnosticConfiguration.value("--model", in: args) else { throw LocalEngineError("Provide --model with a local E5 small directory") }
             try await SearchWorkflow.run(project: root, model: path); return
