@@ -7,17 +7,19 @@ use laut_engine::{
 
 pub(super) struct ResearchState {
     pub open: bool,
+    pub return_to_results: bool,
     pub config: ResearchConfig,
     pub search: Option<SearchResult>,
     query: String,
     task: String,
-    all_library: bool,
+    pub scope: String,
     pdfs: bool,
     analysis_pdfs: bool,
     tab: usize,
     reports: Vec<Report>,
     selected_report: Option<String>,
     warning: String,
+    show_weak: bool,
 }
 pub(super) enum ResearchEvent {
     Search(Result<SearchResult, String>),
@@ -48,7 +50,7 @@ impl ResearchState {
                 }
             }
         }
-        Self{open:false,config,search:None,query:String::new(),task:"Fasse die zentralen Aussagen, konkreten Zahlen, Zeitpläne und offenen Fragen zusammen.".into(),all_library:false,pdfs:true,analysis_pdfs:false,tab:0,reports:vec![],selected_report:None,warning:String::new()}
+        Self{open:false,return_to_results:false,config,search:None,query:String::new(),task:"Fasse die zentralen Aussagen, konkreten Zahlen, Zeitpläne und offenen Fragen zusammen.".into(),scope:"current".into(),pdfs:true,analysis_pdfs:false,tab:0,reports:vec![],selected_report:None,warning:String::new(),show_weak:false}
     }
     pub fn reload_reports(&mut self) {
         match StateStore::default_path().and_then(|p| engine::reports(&p.join("research/results")))
@@ -61,6 +63,112 @@ impl ResearchState {
         }
     }
 }
+
+fn research_scope(
+    ui: &mut egui::Ui,
+    en: bool,
+    scope: &mut String,
+    collections: &[laut_engine::library::Collection],
+    current: Option<&Recording>,
+) {
+    let t = |de, english| if en { english } else { de };
+    let selected = if scope == "library" {
+        t("Gesamte Bibliothek", "Whole library").to_owned()
+    } else if scope == "current" {
+        current
+            .map(|recording| {
+                format!(
+                    "{}: {}",
+                    t("Aktuelle Aufnahme", "Current recording"),
+                    recording.title
+                )
+            })
+            .unwrap_or_else(|| t("Aktuelle Aufnahme", "Current recording").to_owned())
+    } else {
+        collections
+            .iter()
+            .find(|collection| collection.id == *scope)
+            .map(|collection| {
+                format!(
+                    "{}: {} ({} {})",
+                    t("Sammlung", "Collection"),
+                    collection.name,
+                    collection.recording_ids.len(),
+                    t("Aufnahmen", "recordings")
+                )
+            })
+            .unwrap_or_else(|| t("Recherchebereich wählen", "Choose research scope").to_owned())
+    };
+    ui.horizontal_wrapped(|ui| {
+        ui.label(t("Recherchebereich", "Research scope"));
+        egui::ComboBox::from_id_salt("research-scope")
+            .selected_text(selected)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(
+                    scope,
+                    "current".into(),
+                    t("Aktuelle Aufnahme", "Current recording"),
+                );
+                for collection in collections {
+                    ui.selectable_value(
+                        scope,
+                        collection.id.clone(),
+                        format!(
+                            "{}: {} ({})",
+                            t("Sammlung", "Collection"),
+                            collection.name,
+                            collection.recording_ids.len()
+                        ),
+                    );
+                }
+                ui.selectable_value(
+                    scope,
+                    "library".into(),
+                    t("Gesamte Bibliothek", "Whole library"),
+                );
+            });
+    });
+}
+
+fn highlighted_source(ui: &mut egui::Ui, text: &str, terms: &[String]) {
+    let terms: std::collections::BTreeSet<_> = terms.iter().cloned().collect();
+    let mut ranges = vec![];
+    let mut start = None;
+    for (index, character) in text
+        .char_indices()
+        .chain(std::iter::once((text.len(), ' ')))
+    {
+        if character.is_alphanumeric() {
+            start.get_or_insert(index);
+        } else if let Some(begin) = start.take()
+            && terms.contains(&text[begin..index].to_lowercase())
+        {
+            ranges.push(begin..index);
+        }
+    }
+    let normal = egui::TextFormat {
+        font_id: egui::TextStyle::Body.resolve(ui.style()),
+        color: ui.visuals().text_color(),
+        ..Default::default()
+    };
+    let mut marked = normal.clone();
+    marked.background = if ui.visuals().dark_mode {
+        egui::Color32::from_rgb(15, 91, 91)
+    } else {
+        egui::Color32::from_rgb(190, 235, 229)
+    };
+    marked.color = ui.visuals().strong_text_color();
+    let mut job = egui::text::LayoutJob::default();
+    let mut cursor = 0;
+    for range in ranges {
+        job.append(&text[cursor..range.start], 0., normal.clone());
+        job.append(&text[range.clone()], 0., marked.clone());
+        cursor = range.end;
+    }
+    job.append(&text[cursor..], 0., normal);
+    job.wrap.max_width = ui.available_width();
+    ui.add(egui::Label::new(job).wrap());
+}
 impl LautApp {
     pub(super) fn research_event(&mut self, event: ResearchEvent) {
         self.busy = false;
@@ -68,6 +176,8 @@ impl LautApp {
         let result = match event {
             ResearchEvent::Search(v) => v.map(|r| {
                 self.research.search = Some(r);
+                self.research.show_weak = false;
+                self.research.return_to_results = false;
                 self.status = self
                     .l("Lokale Suche abgeschlossen.", "Local search ready.")
                     .into();
@@ -116,11 +226,30 @@ impl LautApp {
             return;
         };
         let current = self.view.as_ref().map(|r| r.id.clone());
-        let scope = if action == 2 || !self.research.all_library {
-            current
-        } else {
-            None
+        let scope = match self.research.scope.as_str() {
+            "library" => None,
+            "current" => current
+                .map(|id| std::collections::BTreeSet::from([id]))
+                .or_else(|| Some(Default::default())),
+            id => self
+                .collections
+                .iter()
+                .find(|collection| collection.id == id)
+                .map(|collection| collection.recording_ids.iter().cloned().collect()),
         };
+        if scope
+            .as_ref()
+            .is_some_and(std::collections::BTreeSet::is_empty)
+        {
+            self.error = true;
+            self.status = self
+                .l(
+                    "Der gewählte Recherchebereich enthält keine aktive Aufnahme.",
+                    "The selected research scope contains no active recording.",
+                )
+                .into();
+            return;
+        }
         let config = self.research.config.clone();
         let query = if action == 2 {
             self.research.task.clone()
@@ -138,6 +267,7 @@ impl LautApp {
         self.cancel = cancel.clone();
         self.busy = true;
         self.running_job = true;
+        self.research.return_to_results = false;
         self.error = false;
         self.status = self
             .l(
@@ -149,7 +279,7 @@ impl LautApp {
         std::thread::spawn(move || {
             let run = (|| -> anyhow::Result<(Option<SearchResult>, Option<Report>)> {
                 let root = StateStore::default_path()?.join("research");
-                let corpus = Corpus::from_library(&library, scope.as_deref(), pdfs)?;
+                let corpus = Corpus::from_library_ids(&library, scope.as_ref(), pdfs)?;
                 let worker = LocalInference::new(config.clone(), action != 2, action != 0)?;
                 let progress = |f, s: &str| {
                     let _ = tx.send(Event::Progress(f, s.into()));
@@ -241,22 +371,43 @@ impl LautApp {
             egui::ScrollArea::vertical().id_salt("research-page").show(ui,|ui|{ui.add_enabled_ui(!self.busy,|ui|{
                 match self.research.tab {
                     0=>{
-                        ui.add(egui::TextEdit::multiline(&mut self.research.query).hint_text(t("Frage oder Thema – auch anders formuliert als im Original","Question or topic, including different wording from the source")).desired_rows(2).desired_width(f32::INFINITY));
-                        ui.checkbox(&mut self.research.all_library,t("Gesamte Bibliothek durchsuchen","Search the whole library"));ui.checkbox(&mut self.research.pdfs,t("PDF-Text und OCR einbeziehen","Include PDF text and OCR"));
-                        ui.horizontal(|ui|{if ui.button(t("Semantisch suchen","Semantic search")).clicked(){action=Some(0);}
-if ui.button(t("Frage lokal beantworten","Answer locally")).clicked(){action=Some(1);}});
-                        ui.small(t("Beim ersten Mal wird der Suchindex aufgebaut. Danach werden nur geänderte Passagen neu berechnet. Antworten verwenden ausgewählte Suchtreffer, keine vollständige Konferenzauswertung.","The first search builds the index; later searches reuse unchanged passages. Answers use selected search hits, not the complete conference."));
-                        if let Some(found)=&self.research.search {
-                            ui.label(format!("{} {}",found.passages,t("Passagen durchsucht · Ähnlichkeit ist keine Gewissheit","passages searched · similarity is not certainty")));
-                            for w in &found.warnings{ui.colored_label(ui.visuals().error_fg_color,w);}
-                            for h in &found.hits {ui.group(|ui|{ui.strong(format!("{} · {}",h.source.title,h.source.label));ui.label(&h.source.text);if ui.button(t("Fundstelle öffnen","Open source")).clicked(){source=Some(h.source.clone());}});}
+                        ui.add(egui::TextEdit::multiline(&mut self.research.query).hint_text(t("Kurze Frage oder 2–5 Kernbegriffe","A short question or 2–5 key terms")).desired_rows(2).desired_width(f32::INFINITY));
+                        research_scope(ui,en,&mut self.research.scope,&self.collections,self.view.as_ref());
+                        ui.checkbox(&mut self.research.pdfs,t("PDF-Text und OCR einbeziehen","Include PDF text and OCR"));
+                        let query_valid=!self.research.query.trim().is_empty()&&self.research.query.len()<=1000;
+                        if self.research.query.len()>1000{ui.colored_label(ui.visuals().error_fg_color,format!("{} / 1000 {}",self.research.query.len(),t("Bytes – bitte auf Namen, Zahlen und Kernbegriffe kürzen","bytes – shorten to names, numbers and key terms")));}
+                        ui.horizontal(|ui|{if ui.add_enabled(query_valid,egui::Button::new(t("Exakt + semantisch suchen","Exact + semantic search"))).clicked(){action=Some(0);}
+if ui.add_enabled(query_valid,egui::Button::new(t("Frage lokal beantworten","Answer locally"))).clicked(){action=Some(1);}});
+                        ui.small(t("Namen am besten kurz suchen, z. B. „SpaceX Musk Starlink“. Direkte Worttreffer werden markiert; schwache Ähnlichkeiten bleiben zunächst ausgeblendet. Der erste Lauf baut den lokalen Index auf.","For names, use a short query such as ‘SpaceX Musk Starlink’. Literal matches are highlighted; weak similarities stay hidden initially. The first run builds the local index."));
+                        if let Some(found)=self.research.search.clone() {
+                            ui.label(format!("{} {}",found.passages,t("eindeutige Passagen durchsucht","unique passages searched")));
+                            if found.omitted_duplicates > 0 {ui.small(format!("{} {}",found.omitted_duplicates,t("doppelte Fundstellen zusammengeführt","duplicate sources collapsed")));}
+                            if !found.warnings.is_empty(){ui.collapsing(format!("{} {}",found.warnings.len(),t("PDF-Seiten ohne Suchtext","PDF pages without searchable text")),|ui|{for w in &found.warnings{ui.colored_label(ui.visuals().warn_fg_color,w);}});}
+                            if found.hits.is_empty(){ui.colored_label(ui.visuals().warn_fg_color,t("Keine direkten oder ausreichend ähnlichen Treffer. Das ist belastbarer als erzwungene Top-Treffer.","No literal or sufficiently similar matches. This is more reliable than forced top results."));}
+                            let mut recordings=std::collections::BTreeMap::new();
+                            for hit in &found.hits{*recordings.entry(hit.source.title.clone()).or_insert(0usize)+=1;}
+                            if recordings.len()>1{ui.collapsing(format!("{} {}",recordings.len(),t("Aufnahmen mit Treffern","recordings with matches")),|ui|{for (title,count) in recordings{ui.label(format!("{count} × {title}"));}});}
+                            let mut show_hit=|ui:&mut egui::Ui,h:&laut_engine::research::SearchHit,weak:bool|{ui.group(|ui|{
+                                ui.strong(format!("{} · {}",h.source.title,h.source.label));
+                                if !h.matched_terms.is_empty(){ui.colored_label(egui::Color32::from_rgb(0,128,128),format!("{}: {}",t("Worttreffer","Literal match"),h.matched_terms.join(", ")));}
+                                else if weak{ui.weak(t("Schwache thematische Ähnlichkeit – kein konkreter Worttreffer","Weak topical similarity – no literal match"));}
+                                else{ui.weak(t("Semantischer Treffer – kein konkreter Worttreffer","Semantic match – no literal match"));}
+                                highlighted_source(ui,&h.source.text,&h.matched_terms);
+                                if ui.button(t("Fundstelle öffnen","Open source")).clicked(){source=Some(h.source.clone());}
+                            });};
+                            for h in &found.hits {show_hit(ui,h,false);}
+                            if !found.weak_hits.is_empty(){
+                                ui.checkbox(&mut self.research.show_weak,format!("{} ({})",t("Schwache Ähnlichkeiten anzeigen","Show weak similarities"),found.weak_hits.len()));
+                                if self.research.show_weak{for h in &found.weak_hits{show_hit(ui,h,true);}}
+                            }
                         }
                     }
                     1=>{
-                        ui.label(t("Verarbeitet den gesamten ausgewählten Text des geöffneten Projekts in Abschnitten. Bestätigte Ausschlüsse bleiben ausgenommen. Abschnittsnotizen bleiben zusätzlich zum Überblick erhalten.","Processes all selected text in the open project in sections. Confirmed exclusions are omitted. Section notes remain available alongside the overview."));
+                        ui.label(t("Verarbeitet den gesamten ausgewählten Text des Recherchebereichs in Abschnitten. So lassen sich auch alle Teile eines Termins gemeinsam auswerten. Bestätigte Ausschlüsse bleiben ausgenommen.","Processes all selected text in the research scope in sections, including every recording in one event collection. Confirmed exclusions are omitted."));
+                        research_scope(ui,en,&mut self.research.scope,&self.collections,self.view.as_ref());
                         ui.add(egui::TextEdit::multiline(&mut self.research.task).desired_rows(3).desired_width(f32::INFINITY));
                         ui.checkbox(&mut self.research.analysis_pdfs,t("Alle angehängten PDF-Seitentexte ebenfalls auswerten","Also analyse all attached PDF page text"));
-                        if let Some(session)=&self.session{let n=Corpus::from_session(session,self.research.analysis_pdfs).sources.len();ui.label(format!("{n} {}",t("Passagen · lange Aufnahmen können auf der CPU deutlich dauern","passages · long recordings can take substantial CPU time")));}
+                        if self.research.scope=="current"{if let Some(session)=&self.session{let n=Corpus::from_session(session,self.research.analysis_pdfs).sources.len();ui.label(format!("{n} {}",t("Passagen · lange Aufnahmen können auf der CPU deutlich dauern","passages · long recordings can take substantial CPU time")));}}else{ui.label(t("Der genaue Umfang wird nach dem Start lokal ermittelt. Sammlungen mit vielen Stunden können auf der CPU lange dauern.","The exact scope is calculated locally after starting. Multi-hour collections can take a long time on CPU."));}
                         if ui.button(t("Auswerten / fortsetzen","Analyse / resume")).clicked(){action=Some(2);}
                         ui.small(t("Fertige Abschnitte werden lokal zwischengespeichert. Mit derselben Aufgabe und denselben Quellen wird nach Abbruch fortgesetzt. Kein Hochladen, kein API-Schlüssel.","Completed sections are checkpointed locally. Resume with the same task and sources after cancellation. No upload or API key."));
                     }
@@ -315,6 +466,7 @@ if ui.button(t("Frage lokal beantworten","Answer locally")).clicked(){action=Som
                         document_id: s.document_id,
                         page: s.page,
                     });
+                    self.research.return_to_results = true;
                     self.research.open = false;
                     self.load(path, ctx.clone());
                 }

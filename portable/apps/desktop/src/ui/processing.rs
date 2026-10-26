@@ -8,7 +8,7 @@ use laut_engine::{
 };
 use serde_json::Value;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     path::Path,
 };
 
@@ -32,6 +32,9 @@ pub(super) struct ProcessingState {
     new_names: BTreeMap<String, String>,
     installed: BTreeMap<String, PathBuf>,
     remove: Option<String>,
+    install_queue: VecDeque<String>,
+    install_total: usize,
+    install_done: usize,
 }
 pub(super) struct Enqueued {
     files: Vec<PathBuf>,
@@ -88,6 +91,9 @@ impl ProcessingState {
             new_names: BTreeMap::new(),
             installed,
             remove: None,
+            install_queue: VecDeque::new(),
+            install_total: 0,
+            install_done: 0,
         }
     }
     pub(super) fn queue(&self) -> anyhow::Result<Queue> {
@@ -186,6 +192,60 @@ impl LautApp {
         self.cancel = Arc::new(AtomicBool::new(false));
         true
     }
+    fn package_operation(&mut self, id: String, action: u8, ctx: &egui::Context) {
+        if !self.processing_start() {
+            return;
+        }
+        let root = self.processing.root.clone();
+        let tx = self.tx.clone();
+        let cancel = self.cancel.clone();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let result = (|| -> anyhow::Result<_> {
+                let root = root
+                    .ok_or_else(|| anyhow::anyhow!("No data folder"))?
+                    .join("models");
+                let package = models::package(&id)?;
+                let path = match action {
+                    0 => Some(models::install(&root, &id, &cancel, |progress, status| {
+                        let _ = tx.send(Event::Progress(progress, status.into()));
+                        ctx.request_repaint();
+                    })?),
+                    1 => Some(models::verify(&root, &package)?),
+                    _ => {
+                        models::remove(&root, &id)?;
+                        None
+                    }
+                };
+                Ok((id, path))
+            })()
+            .map_err(|error| format!("{error:#}"));
+            let _ = tx.send(Event::Processing(ProcessingEvent::Package(result)));
+            ctx.request_repaint();
+        });
+    }
+    fn install_packages(&mut self, ids: Vec<String>, ctx: &egui::Context) {
+        let missing: VecDeque<_> = ids
+            .into_iter()
+            .filter(|id| !self.processing.installed.contains_key(id))
+            .collect();
+        if missing.is_empty() {
+            self.error = false;
+            self.status = self
+                .l(
+                    "Die gewählten lokalen Pakete sind bereits installiert.",
+                    "The selected local packages are already installed.",
+                )
+                .into();
+            return;
+        }
+        self.processing.install_total = missing.len();
+        self.processing.install_done = 0;
+        self.processing.install_queue = missing;
+        if let Some(id) = self.processing.install_queue.pop_front() {
+            self.package_operation(id, 0, ctx);
+        }
+    }
     pub(super) fn diarization_config(&self) -> DiarizationConfig {
         DiarizationConfig {
             executable: self.processing.diarizer[0].clone().into(),
@@ -229,6 +289,7 @@ impl LautApp {
     pub(super) fn processing_event(&mut self, event: ProcessingEvent, ctx: &egui::Context) {
         self.busy = false;
         self.running_job = false;
+        let mut next_package = None;
         let result=match event {
             ProcessingEvent::Queued(result)=>{
                 self.refresh_jobs();self.processing.tab=2;self.shell.section=Section::Sources;
@@ -252,7 +313,22 @@ impl LautApp {
                 else {if let Some(path)=self.processing.installed.remove(&id){
                     for p in self.job_fields.iter_mut().chain(self.processing.diarizer.iter_mut()).chain(self.processing.download_paths.iter_mut()){if Path::new(p)==path{p.clear();}}
                 }}
-                self.status=self.l("Modellverwaltung abgeschlossen.","Model operation complete.").into();
+                if self.processing.install_total > 0 {
+                    self.processing.install_done += 1;
+                    next_package = self.processing.install_queue.pop_front();
+                    self.status = format!(
+                        "{} / {} · {}",
+                        self.processing.install_done,
+                        self.processing.install_total,
+                        self.l("lokale Pakete eingerichtet", "local packages set up")
+                    );
+                    if next_package.is_none() {
+                        self.processing.install_total = 0;
+                        self.processing.install_done = 0;
+                    }
+                } else {
+                    self.status=self.l("Modellverwaltung abgeschlossen.","Model operation complete.").into();
+                }
             }),
             ProcessingEvent::Analysis(result)=>result.and_then(|analysis|{
                 let session=self.session.as_ref().ok_or("No open recording")?;
@@ -263,8 +339,13 @@ impl LautApp {
             ProcessingEvent::Cleaned(result)=>result.map(|_|{self.status=self.l("Temporäre Auftragsdateien entfernt; Bibliothek und Original bleiben erhalten.","Temporary job files removed; library and original retained.").into();}),
         };
         if let Err(e) = result {
+            self.processing.install_queue.clear();
+            self.processing.install_total = 0;
+            self.processing.install_done = 0;
             self.error = true;
             self.status = e;
+        } else if let Some(id) = next_package {
+            self.package_operation(id, 0, ctx);
         }
         ctx.request_repaint();
     }
@@ -320,6 +401,7 @@ impl LautApp {
         let mut run_job = None;
         let mut run_all = false;
         let mut package_action = None;
+        let mut install_plan = None;
         let mut analyze = false;
         let mut apply = false;
         let mut cleanup = None;
@@ -395,21 +477,68 @@ impl LautApp {
                         if ui.add_enabled(ready&&download_ready&&urls_valid.is_ok()&&(!self.processing.files.is_empty()||has_urls),egui::Button::new(t("Zur Warteschlange hinzufügen","Add to queue"))).clicked(){enqueue=true;}
                     },
                     1=>{
-                        ui.label(t("Downloads beginnen nur mit Installieren. Nach der Einrichtung erfolgen Transkription und Sprecheranalyse lokal.","Downloads start only when you choose Install. Once set up, transcription and speaker analysis run locally."));
-                        let packages=models::catalog();
-                        for p in packages.iter().filter(|p|p.platform=="all"||p.platform==models::platform()){
-                            ui.group(|ui|{ui.horizontal_wrapped(|ui|{
-                                ui.strong(&p.name);ui.label(format!("{:.0} MB · {}",p.bytes as f64/1_000_000.,p.license));
-                                if let Some(path)=self.processing.installed.get(&p.id).cloned(){
-                                    ui.label(t("Installiert","Installed"));
-                                    if ui.small_button(t("Verwenden","Use")).clicked(){self.use_package(&p.id,&path);}
-                                    if ui.small_button(t("Prüfen","Verify")).clicked(){package_action=Some((p.id.clone(),1));}
-                                    if ui.small_button(t("Entfernen …","Remove …")).clicked(){self.processing.remove=Some(p.id.clone());}
-                                } else if ui.button(t("Installieren / fortsetzen","Install / resume")).clicked(){package_action=Some((p.id.clone(),0));}
-                                ui.hyperlink_to(t("Quelle / Lizenz","Source / license"),&p.source);
-                            });});
+                        ui.label(t("Wähle zuerst, was du mit Laut machen möchtest. Laut zeigt nur die dafür nötigen lokalen Bausteine; Downloads beginnen erst nach einem Klick auf Installieren.","Start by choosing what you want to do with Laut. Laut shows only the local components needed for it; downloads begin only after you choose Install."));
+                        ui.small(t("Empfehlung für normale Rechner ohne besondere Grafikkarte: Whisper Small Q5 für gute Transkripte, danach nur die Funktionen ergänzen, die du wirklich nutzt.","Recommendation for ordinary computers without a dedicated GPU: Whisper Small Q5 for good transcripts, then add only the features you actually use."));
+                        ui.add_space(8.);
+
+                        let transcription_ids=vec!["ggml-small-q5_1".to_owned()];
+                        let (transcription_missing,transcription_bytes)=package_plan(&self.processing.installed,&transcription_ids);
+                        let transcription_programs=self.job_fields[1].is_empty()||!Path::new(&self.job_fields[1]).is_file()||!Path::new(&self.job_fields[3]).is_file()||!Path::new(&self.job_fields[4]).is_file();
+                        let transcription_ready=Path::new(&self.job_fields[2]).is_file()&&!transcription_programs;
+                        if setup_card(ui,en,"1 · Transkribieren","1 · Transcribe",t("Für Audio, Video und Aufnahmen. Small Q5 ist der empfohlene Kompromiss aus Qualität, Tempo und Speicherbedarf.","For audio, video and recordings. Small Q5 is the recommended balance of quality, speed and storage."),transcription_ready,&transcription_missing,transcription_bytes,transcription_programs.then_some(t("Whisper-Programm, FFmpeg oder FFprobe", "Whisper program, FFmpeg or FFprobe"))){install_plan=Some(transcription_ids);}
+
+                        let platform=models::platform();
+                        let youtube_ids=vec![format!("yt-dlp-2026-10-21-{platform}"),format!("deno-v2-9-8-{platform}")];
+                        let (youtube_missing,youtube_bytes)=package_plan(&self.processing.installed,&youtube_ids);
+                        let youtube_ready=self.processing.download_paths.iter().all(|path|Path::new(path).is_file())&&Path::new(&self.job_fields[3]).is_file()&&Path::new(&self.job_fields[4]).is_file();
+                        if setup_card(ui,en,"2 · YouTube importieren","2 · Import YouTube",t("Fertige Videos und abgeschlossene Livestreams landen direkt in der Warteschlange. Es wird nur die Audiospur gespeichert.","Finished videos and completed livestreams go straight to the queue. Only the audio track is stored."),youtube_ready,&youtube_missing,youtube_bytes,(!Path::new(&self.job_fields[3]).is_file()||!Path::new(&self.job_fields[4]).is_file()).then_some("FFmpeg / FFprobe")){install_plan=Some(youtube_ids);}
+
+                        let diarizer_id=format!("sherpa-1-13-8-{platform}");
+                        let diarizer_packaged=models::package(&diarizer_id).is_ok();
+                        let mut speaker_ids=vec!["speaker-segmentation".to_owned(),"speaker-embedding".to_owned()];
+                        if diarizer_packaged {speaker_ids.insert(0,diarizer_id);}
+                        let (speaker_missing,speaker_bytes)=package_plan(&self.processing.installed,&speaker_ids);
+                        let speaker_ready=self.processing.diarizer.iter().all(|path|Path::new(path).is_file())&&Path::new(&self.job_fields[3]).is_file();
+                        let external_diarizer=!diarizer_packaged&&!Path::new(&self.processing.diarizer[0]).is_file();
+                        let ffmpeg_missing=!Path::new(&self.job_fields[3]).is_file();
+                        let speaker_programs=match (external_diarizer,ffmpeg_missing){(true,true)=>Some("Sherpa / FFmpeg"),(true,false)=>Some("Sherpa"),(false,true)=>Some("FFmpeg"),_=>None};
+                        if setup_card(ui,en,"3 · Sprecher unterscheiden","3 · Separate speakers",t("Optional nach der Transkription. Stimmen werden lokal gruppiert; Namen prüfst und bestätigst du anschließend selbst.","Optional after transcription. Voices are grouped locally; you review and confirm their names afterwards."),speaker_ready,&speaker_missing,speaker_bytes,speaker_programs){install_plan=Some(speaker_ids);}
+
+                        let search_ids=vec!["qwen3-embedding-0-6b-q8".to_owned()];
+                        let (search_missing,search_bytes)=package_plan(&self.processing.installed,&search_ids);
+                        let search_ready=self.research.config.embedding_worker.is_file()&&self.research.config.embedding_model.is_file();
+                        if setup_card(ui,en,"4 · Semantisch suchen","4 · Semantic search",t("Findet sinngleiche Passagen auch ohne exakten Suchbegriff. Index und Suchanfrage bleiben vollständig lokal.","Finds passages with the same meaning even without the exact wording. The index and query remain entirely local."),search_ready,&search_missing,search_bytes,(!self.research.config.embedding_worker.is_file()).then_some(t("lokales Suchprogramm","local search program"))){install_plan=Some(search_ids);}
+
+                        let analysis_ids=vec!["qwen3-4b-instruct-q4".to_owned()];
+                        let (analysis_missing,analysis_bytes)=package_plan(&self.processing.installed,&analysis_ids);
+                        let analysis_ready=self.research.config.generation_worker.is_file()&&self.research.config.text_model.is_file();
+                        if setup_card(ui,en,"5 · Lokal auswerten","5 · Analyse locally",t("Beantwortet Fragen und erstellt Zusammenfassungen aus den gewählten Belegstellen. Das 4B-Modell ist genauer, auf CPU aber deutlich langsamer.","Answers questions and creates summaries from the selected evidence. The 4B model is more accurate, but considerably slower on CPU."),analysis_ready,&analysis_missing,analysis_bytes,(!self.research.config.generation_worker.is_file()).then_some(t("lokales Textprogramm","local text program"))){install_plan=Some(analysis_ids);}
+
+                        if transcription_programs||!self.research.config.embedding_worker.is_file()||!self.research.config.generation_worker.is_file(){
+                            ui.add_space(6.);
+                            ui.colored_label(egui::Color32::from_rgb(184,116,35),t("Einige Programme fehlen noch. Laut kann bereits installierte Programme automatisch finden; unbekannte Programme lassen sich darunter einmalig auswählen.","Some programs are still missing. Laut can find already installed programs automatically; unknown programs can be selected once below."));
+                            if ui.button(t("Vorhandene Programme jetzt suchen","Find installed programs now")).clicked(){self.detect_processing_files();}
                         }
-                        ui.separator();
+                        if self.processing.install_total>0 {
+                            ui.label(format!("{} / {} · {}",self.processing.install_done,self.processing.install_total,t("Pakete eingerichtet","packages set up")));
+                        }
+                        ui.add_space(8.);
+                        let packages=models::catalog();
+                        ui.collapsing(t("Alle Pakete und Alternativen","All packages and alternatives"),|ui|{
+                            ui.small(t("Hier findest du kleinere Testmodelle, Sprachdaten und die technischen Einzelpakete. Für den normalen Einstieg reichen die Schritte oben.","This contains smaller test models, language data and individual technical packages. For normal setup, the steps above are sufficient."));
+                            for p in packages.iter().filter(|p|p.platform=="all"||p.platform==models::platform()){
+                                ui.group(|ui|{ui.horizontal_wrapped(|ui|{
+                                    ui.strong(&p.name);ui.label(format!("{:.0} MB · {}",p.bytes as f64/1_000_000.,p.license));
+                                    if let Some(path)=self.processing.installed.get(&p.id).cloned(){
+                                        ui.label(t("Installiert","Installed"));
+                                        if ui.small_button(t("Verwenden","Use")).clicked(){self.use_package(&p.id,&path);}
+                                        if ui.small_button(t("Prüfen","Verify")).clicked(){package_action=Some((p.id.clone(),1));}
+                                        if ui.small_button(t("Entfernen …","Remove …")).clicked(){self.processing.remove=Some(p.id.clone());}
+                                    } else if ui.button(t("Installieren / fortsetzen","Install / resume")).clicked(){package_action=Some((p.id.clone(),0));}
+                                    ui.hyperlink_to(t("Quelle / Lizenz","Source / license"),&p.source);
+                                });});
+                            }
+                        });
                         ui.collapsing(t("Lokale Programme und eigene Modelle","Local programs and external models"),|ui|{
                             ui.small(t("Vorhandene Programme einmal auswählen. Die folgenden Pfade werden gespeichert; externe Dateien werden nicht entfernt.","Choose existing programs once. Paths are remembered; external files are never deleted."));
                             for (i,label) in [(1,"whisper-cli"),(2,"Whisper GGML"),(3,"FFmpeg"),(4,"FFprobe")]{path_field(ui,label,&mut self.job_fields[i]);}
@@ -472,6 +601,9 @@ if job.config.output.exists()&&ui.small_button(t("Temporäre Dateien entfernen",
         if let Some(id) = self.processing.remove.clone() {
             egui::Window::new(t("Modell entfernen?","Remove model?")).collapsible(false).show(ctx,|ui|{ui.label(t("Nur dieses installierte Paket wird entfernt. Aufnahmen bleiben erhalten; das Paket lässt sich erneut installieren.","Only this installed package will be removed. Recordings are retained; the package can be reinstalled."));if ui.button(t("Entfernen","Remove")).clicked(){package_action=Some((id,2));self.processing.remove=None;}
 if ui.button(t("Behalten","Keep")).clicked(){self.processing.remove=None;}});
+        }
+        if let Some(ids) = install_plan {
+            self.install_packages(ids, ctx);
         }
         if enqueue && self.processing_start() {
             let queue = self.processing.queue();
@@ -566,36 +698,8 @@ if ui.button(t("Behalten","Keep")).clicked(){self.processing.remove=None;}});
                 ctx.request_repaint();
             });
         }
-        if let Some((id, action)) = package_action
-            && self.processing_start()
-        {
-            let root = self.processing.root.clone();
-            let tx = self.tx.clone();
-            let cancel = self.cancel.clone();
-            let ctx = ctx.clone();
-            std::thread::spawn(move || {
-                let result = (|| -> anyhow::Result<_> {
-                    let root = root
-                        .ok_or_else(|| anyhow::anyhow!("No data folder"))?
-                        .join("models");
-                    let p = models::package(&id)?;
-                    let path = match action {
-                        0 => Some(models::install(&root, &id, &cancel, |p, s| {
-                            let _ = tx.send(Event::Progress(p, s.into()));
-                            ctx.request_repaint();
-                        })?),
-                        1 => Some(models::verify(&root, &p)?),
-                        _ => {
-                            models::remove(&root, &id)?;
-                            None
-                        }
-                    };
-                    Ok((id, path))
-                })()
-                .map_err(|e| format!("{e:#}"));
-                let _ = tx.send(Event::Processing(ProcessingEvent::Package(result)));
-                ctx.request_repaint();
-            });
+        if let Some((id, action)) = package_action {
+            self.package_operation(id, action, ctx);
         }
         if let Some(id) = cleanup
             && self.processing_start()
@@ -701,6 +805,85 @@ if ui.button(t("Behalten","Keep")).clicked(){self.processing.remove=None;}});
             self.job_open = false;
         }
     }
+}
+fn package_plan(installed: &BTreeMap<String, PathBuf>, ids: &[String]) -> (Vec<String>, u64) {
+    let missing: Vec<_> = ids
+        .iter()
+        .filter(|id| !installed.contains_key(*id))
+        .cloned()
+        .collect();
+    let bytes = missing
+        .iter()
+        .filter_map(|id| models::package(id).ok())
+        .map(|package| package.bytes)
+        .sum();
+    (missing, bytes)
+}
+#[allow(clippy::too_many_arguments)]
+fn setup_card(
+    ui: &mut egui::Ui,
+    en: bool,
+    title_de: &str,
+    title_en: &str,
+    description: &str,
+    ready: bool,
+    missing_packages: &[String],
+    download_bytes: u64,
+    missing_programs: Option<&str>,
+) -> bool {
+    let t = |de, english| if en { english } else { de };
+    let mut install = false;
+    ui.group(|ui| {
+        ui.set_min_width(ui.available_width());
+        ui.horizontal_wrapped(|ui| {
+            ui.strong(if en { title_en } else { title_de });
+            if ready {
+                ui.colored_label(
+                    egui::Color32::from_rgb(46, 139, 87),
+                    t("✓ Bereit", "✓ Ready"),
+                );
+            } else {
+                ui.colored_label(
+                    egui::Color32::from_rgb(184, 116, 35),
+                    t("Noch nicht vollständig", "Not complete yet"),
+                );
+            }
+        });
+        ui.label(description);
+        if !ready {
+            let mut missing = Vec::new();
+            if !missing_packages.is_empty() {
+                missing.push(format!(
+                    "{} {}",
+                    missing_packages.len(),
+                    t("lokale Pakete", "local packages")
+                ));
+            }
+            if let Some(programs) = missing_programs {
+                missing.push(programs.to_owned());
+            }
+            if !missing.is_empty() {
+                ui.small(format!(
+                    "{}: {}",
+                    t("Fehlt", "Missing"),
+                    missing.join(" · ")
+                ));
+            }
+            if !missing_packages.is_empty()
+                && ui
+                    .button(format!(
+                        "{} ({:.0} MB)",
+                        t("Benötigte Pakete installieren", "Install required packages"),
+                        download_bytes as f64 / 1_000_000.
+                    ))
+                    .clicked()
+            {
+                install = true;
+            }
+        }
+    });
+    ui.add_space(5.);
+    install
 }
 fn speaker_count(ui: &mut egui::Ui, en: bool, count: &mut u32) {
     ui.horizontal(|ui| {

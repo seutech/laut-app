@@ -41,9 +41,9 @@ pub(super) fn configure(ctx: &egui::Context) {
                 .text_styles
                 .insert(kind, egui::FontId::proportional(size));
         }
-        style.spacing.item_spacing = egui::vec2(8., 7.);
-        style.spacing.button_padding = egui::vec2(10., 5.);
-        style.spacing.interact_size.y = 28.;
+        style.spacing.item_spacing = egui::vec2(8., 6.);
+        style.spacing.button_padding = egui::vec2(9., 4.);
+        style.spacing.interact_size.y = 27.;
         style.spacing.slider_width = 220.;
         let dark = style.visuals.dark_mode;
         style.visuals.panel_fill = if dark {
@@ -74,14 +74,27 @@ pub(super) fn configure(ctx: &egui::Context) {
         style.visuals.widgets.inactive.weak_bg_fill = if dark {
             egui::Color32::from_rgb(48, 49, 53)
         } else {
-            egui::Color32::from_rgb(243, 243, 246)
+            egui::Color32::from_rgb(248, 249, 250)
         };
         style.visuals.widgets.inactive.bg_stroke = egui::Stroke::new(
             0.5,
             if dark {
                 egui::Color32::from_gray(70)
             } else {
-                egui::Color32::from_gray(216)
+                egui::Color32::from_gray(226)
+            },
+        );
+        style.visuals.widgets.hovered.weak_bg_fill = if dark {
+            egui::Color32::from_rgb(45, 62, 64)
+        } else {
+            egui::Color32::from_rgb(234, 246, 245)
+        };
+        style.visuals.widgets.hovered.bg_stroke = egui::Stroke::new(
+            1.,
+            if dark {
+                egui::Color32::from_rgb(79, 164, 160)
+            } else {
+                egui::Color32::from_rgb(105, 177, 173)
             },
         );
         for widget in [

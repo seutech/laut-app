@@ -55,6 +55,14 @@ impl Corpus {
         digest(&serde_json::to_vec(&self.sources).expect("sources"))
     }
     pub fn from_library(library: &Library, recording: Option<&str>, pdfs: bool) -> Result<Self> {
+        let recordings = recording.map(|id| BTreeSet::from([id.to_owned()]));
+        Self::from_library_ids(library, recordings.as_ref(), pdfs)
+    }
+    pub fn from_library_ids(
+        library: &Library,
+        recordings: Option<&BTreeSet<String>>,
+        pdfs: bool,
+    ) -> Result<Self> {
         let catalog = library.catalog()?;
         let mut out = Self {
             sources: vec![],
@@ -62,15 +70,97 @@ impl Corpus {
         };
         let mut entries = catalog.entries;
         entries.sort_by(|a, b| a.id.cmp(&b.id));
+        let mut projects = vec![];
         for entry in entries {
-            if recording.is_some_and(|id| id != entry.id) {
+            if recordings.is_some_and(|ids| !ids.contains(&entry.id)) {
                 continue;
             }
             let loaded = library.load(&entry.id)?;
-            let current = Self::from_session(&loaded.session, pdfs);
-            out.sources.extend(current.sources);
+            let documents = loaded
+                .session
+                .document
+                .view()
+                .conference
+                .as_ref()
+                .map_or(0, |conference| conference.documents.len());
+            projects.push((documents, entry.id, loaded.session));
+        }
+        // Prefer the most specific project when the same PDF is attached to both its
+        // talk and a conference-wide Q&A/archive project.
+        projects.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
+        let mut seen = BTreeSet::new();
+        for (_, _, session) in projects {
+            let pdf_identities: BTreeMap<_, _> = session
+                .document
+                .raw()
+                .get("conference")
+                .and_then(|value| value.get("documents"))
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|document| {
+                    let id = document.get("id")?.as_str()?.to_owned();
+                    let identity = document
+                        .get("portableSource")
+                        .and_then(|value| value.get("sha256"))
+                        .and_then(serde_json::Value::as_str)
+                        .or_else(|| document.get("sha256").and_then(serde_json::Value::as_str))
+                        .unwrap_or(&id)
+                        .to_owned();
+                    Some((id, identity))
+                })
+                .collect();
+            let current = Self::from_session(&session, pdfs);
+            for source in current.sources {
+                let normal = normalised(&source.text);
+                let keys = if source.kind == "pdf" {
+                    let mut keys = vec![];
+                    if let Some(identity) = source
+                        .document_id
+                        .as_ref()
+                        .and_then(|id| pdf_identities.get(id))
+                    {
+                        // Copies of one PDF can produce slightly different reading
+                        // order after separate extraction/OCR runs. The verified file
+                        // hash and page number identify the authoritative source.
+                        keys.push(format!(
+                            "pdf-file|{identity}|{}",
+                            source.page.unwrap_or_default()
+                        ));
+                    }
+                    // Older imported projects may lack a retained file hash and may
+                    // have different document IDs. A sorted word projection collapses
+                    // the same page even when Poppler/OCR returned a different reading
+                    // order, while keeping genuinely different page content distinct.
+                    let mut words: Vec<_> = normal
+                        .split(|c: char| !c.is_alphanumeric())
+                        .filter(|word| !word.is_empty())
+                        .map(str::to_lowercase)
+                        .collect();
+                    words.sort();
+                    keys.push(format!(
+                        "pdf-text|{}|{}",
+                        source.label.to_lowercase(),
+                        words.join(" ")
+                    ));
+                    keys
+                } else if normal.len() >= 96 {
+                    // Exact long overlaps occur when a preview and the final talk are
+                    // both in the library. Keep short repeated phrases in context.
+                    vec![format!("transcript|{normal}")]
+                } else {
+                    vec![source.id.clone()]
+                };
+                let keys: Vec<_> = keys.into_iter().map(|key| digest(key.as_bytes())).collect();
+                if keys.iter().all(|key| !seen.contains(key)) {
+                    seen.extend(keys);
+                    out.sources.push(source);
+                }
+            }
             out.warnings.extend(current.warnings);
         }
+        out.warnings.sort();
+        out.warnings.dedup();
         ensure!(
             !out.sources.is_empty(),
             "No searchable source text in this scope"
@@ -227,10 +317,16 @@ pub struct SearchHit {
     pub source: Source,
     pub semantic_score: f32,
     pub score: f32,
+    #[serde(default)]
+    pub matched_terms: Vec<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SearchResult {
     pub hits: Vec<SearchHit>,
+    #[serde(default)]
+    pub weak_hits: Vec<SearchHit>,
+    #[serde(default)]
+    pub omitted_duplicates: usize,
     pub passages: usize,
     pub warnings: Vec<String>,
     pub fingerprint: String,
@@ -337,10 +433,71 @@ pub fn search(
     let texts: Vec<_> = corpus.sources.iter().map(|s| s.text.clone()).collect();
     let docs = vectors(engine, cache, &texts, false, cancel, &progress)?;
     let q = vectors(engine, cache, &[query.into()], true, cancel, &|_, _| {})?.remove(0);
+    let stopwords: BTreeSet<&str> = [
+        "a",
+        "an",
+        "and",
+        "about",
+        "are",
+        "as",
+        "at",
+        "by",
+        "for",
+        "from",
+        "how",
+        "in",
+        "include",
+        "including",
+        "is",
+        "like",
+        "mention",
+        "mentioned",
+        "mentions",
+        "of",
+        "on",
+        "or",
+        "related",
+        "the",
+        "these",
+        "this",
+        "to",
+        "what",
+        "where",
+        "which",
+        "who",
+        "with",
+        "auch",
+        "das",
+        "der",
+        "die",
+        "ein",
+        "eine",
+        "einschließlich",
+        "erwähnt",
+        "erwähnungen",
+        "im",
+        "in",
+        "mit",
+        "oder",
+        "sowie",
+        "und",
+        "von",
+        "was",
+        "welche",
+        "wer",
+        "wie",
+        "wo",
+        "wurde",
+        "werden",
+        "zu",
+    ]
+    .into_iter()
+    .collect();
     let terms: BTreeSet<_> = query
         .split(|c: char| !c.is_alphanumeric())
         .filter(|x| x.chars().count() >= 2)
         .map(str::to_lowercase)
+        .filter(|x| !stopwords.contains(x.as_str()))
         .collect();
     // Exact names, short acronyms and years matter in journalistic questions.
     // Weight anchors by rarity; semantic similarity alone often misses dates.
@@ -392,12 +549,44 @@ pub fn search(
             source: s.clone(),
             semantic_score,
             score: semantic_score + 0.25 * lexical,
+            matched_terms: matched.iter().map(|&i| terms[i].clone()).collect(),
         });
     }
-    hits.sort_by(|a, b| b.score.total_cmp(&a.score));
+    // Literal evidence comes first. Semantic-only passages need a conservative
+    // absolute floor; returning a fixed top 30 made unrelated material look like
+    // evidence even when the best vector match was weak.
+    hits.sort_by(|a, b| {
+        (!b.matched_terms.is_empty())
+            .cmp(&(!a.matched_terms.is_empty()))
+            .then_with(|| b.matched_terms.len().cmp(&a.matched_terms.len()))
+            .then_with(|| b.score.total_cmp(&a.score))
+    });
+    let mut unique = vec![];
+    let mut seen = BTreeSet::new();
+    let mut omitted_duplicates = 0;
+    for hit in hits {
+        let text = normalised(&hit.source.text).to_lowercase();
+        let key = if hit.source.kind == "pdf" || text.len() >= 96 {
+            format!("{}|{text}", hit.source.kind)
+        } else {
+            hit.source.id.clone()
+        };
+        if seen.insert(digest(key.as_bytes())) {
+            unique.push(hit);
+        } else {
+            omitted_duplicates += 1;
+        }
+    }
+    const STRONG_SEMANTIC_SCORE: f32 = 0.40;
+    let (mut hits, mut weak_hits): (Vec<_>, Vec<_>) = unique.into_iter().partition(|hit| {
+        !hit.matched_terms.is_empty() || hit.semantic_score >= STRONG_SEMANTIC_SCORE
+    });
     hits.truncate(30);
+    weak_hits.truncate(12);
     Ok(SearchResult {
         hits,
+        weak_hits,
+        omitted_duplicates,
         passages: corpus.sources.len(),
         warnings: corpus.warnings.clone(),
         fingerprint: corpus.fingerprint(),

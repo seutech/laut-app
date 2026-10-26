@@ -224,9 +224,11 @@ impl LautApp {
         let mut update = None;
         let mut rename = None;
         let mut seek = None;
+        let mut return_to_results = false;
         if self.conference.open {
             let mut open = true;
             egui::Window::new(t("Konferenz und Unterlagen","Conference and documents")).open(&mut open).default_width(850.).default_height(650.).show(ctx,|ui|{
+                if self.research.return_to_results && self.research.search.is_some() && ui.button(t("← Zur Trefferliste","← Back to results")).clicked(){return_to_results=true;}
                 ui.horizontal_wrapped(|ui|{for (i,label) in [t("PDFs","PDFs"),t("Folien","Slides"),t("Kapitel","Chapters"),t("Einspieler","Video inserts"),t("Begriffe","Vocabulary"),t("Ablage / Programme","Storage / programs")].iter().enumerate(){ui.selectable_value(&mut self.conference.tab,i,*label);}});
                 ui.separator();
                 if self.busy {ui.spinner();ui.label(&self.status);if self.running_job&&ui.button(t("Abbrechen","Cancel")).clicked(){self.cancel.store(true,Ordering::Relaxed);}}
@@ -423,7 +425,8 @@ if ui.button(t("Namen bestätigen","Confirm name")).clicked(){rename=Some(Comman
             egui::Window::new(t("PDF-Seite","PDF page")).open(&mut open).default_width(900.).default_height(700.).show(ctx,|ui|{
                 if let Some((id,n))=&self.conference.page && let Some(r)=&self.view && let Some(doc)=r.conference.iter().flat_map(|c|&c.documents).find(|d|d.id==*id){
                     ui.label(format!("{} · {} {}",doc.title,t("Seite","Page"),n));
-                    ui.horizontal(|ui|{if ui.add_enabled(!self.busy&&*n>1,egui::Button::new(t("Vorige Seite", "Previous page"))).clicked(){preview=Some((id.clone(),n-1));}
+                    ui.horizontal(|ui|{if self.research.return_to_results && self.research.search.is_some() && ui.button(t("← Trefferliste","← Results")).clicked(){return_to_results=true;}
+if ui.add_enabled(!self.busy&&*n>1,egui::Button::new(t("Vorige Seite", "Previous page"))).clicked(){preview=Some((id.clone(),n-1));}
 if ui.add_enabled(!self.busy&&doc.pages.iter().any(|p|p.number==n+1),egui::Button::new(t("Nächste Seite", "Next page"))).clicked(){preview=Some((id.clone(),n+1));}
                         if ui.button(t("Mit aktueller Audiostelle verknüpfen …","Link to current audio time …")).clicked(){self.conference.editing=Some(("slides".into(),json!({"id":core::id(),"documentID":id,"page":n,"start":self.seek,"confirmed":false,"useful":true,"matchEvidence":"Manual selection"})));}
                     });
@@ -432,6 +435,13 @@ if let Some(p)=doc.pages.iter().find(|p|p.number==*n){ui.separator();let text=co
                 }
             });
             self.conference.preview_open = open;
+        }
+        if return_to_results {
+            self.conference.open = false;
+            self.conference.clear();
+            self.research.return_to_results = false;
+            self.show_section(Section::Search, ctx);
+            return;
         }
         if let Some(command) = rename {
             self.command(command);

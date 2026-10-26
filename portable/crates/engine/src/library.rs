@@ -3,7 +3,7 @@
 use crate::{Session, read_json_bytes, write_new};
 use anyhow::{Context, Result, bail, ensure};
 use laut_core::Document;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     fs,
@@ -12,6 +12,28 @@ use std::{
 };
 
 const MARKER: &str = "laut-library.json";
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct LibraryMarker {
+    kind: String,
+    version: u32,
+    #[serde(default)]
+    collections: Vec<Collection>,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct Collection {
+    pub id: String,
+    pub name: String,
+    pub recording_ids: Vec<String>,
+}
+impl Collection {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            id: uuid::Uuid::new_v4().to_string().to_uppercase(),
+            name: name.into(),
+            recording_ids: vec![],
+        }
+    }
+}
 #[derive(Clone, Debug)]
 pub struct Library {
     pub root: PathBuf,
@@ -83,7 +105,11 @@ impl Library {
         }
         write_new(
             &root.join(MARKER),
-            b"{\"kind\":\"laut-portable-library\",\"version\":1}\n",
+            &serde_json::to_vec_pretty(&LibraryMarker {
+                kind: "laut-portable-library".into(),
+                version: 1,
+                collections: vec![],
+            })?,
         )?;
         Self::open(root)
     }
@@ -93,13 +119,47 @@ impl Library {
             !root.join("COPY-INCOMPLETE").exists(),
             "Library copy or restore is incomplete; open the original library"
         );
-        let marker: serde_json::Value =
-            serde_json::from_slice(&read_json_bytes(&root.join(MARKER))?)?;
+        let marker: LibraryMarker = serde_json::from_slice(&read_json_bytes(&root.join(MARKER))?)?;
         ensure!(
-            marker["kind"] == "laut-portable-library" && marker["version"] == 1,
+            marker.kind == "laut-portable-library" && marker.version == 1,
             "Unsupported portable library"
         );
+        validate_collections(&marker.collections)?;
         Ok(Self { root })
+    }
+    pub fn collections(&self) -> Result<Vec<Collection>> {
+        let mut marker: LibraryMarker =
+            serde_json::from_slice(&read_json_bytes(&self.root.join(MARKER))?)?;
+        ensure!(
+            marker.kind == "laut-portable-library" && marker.version == 1,
+            "Unsupported portable library"
+        );
+        validate_collections(&marker.collections)?;
+        normalise_collections(&mut marker.collections);
+        Ok(marker.collections)
+    }
+    pub fn save_collections(&self, collections: &[Collection]) -> Result<()> {
+        let mut collections = collections.to_vec();
+        validate_collections(&collections)?;
+        normalise_collections(&mut collections);
+        let _library_lock = self.lock(true)?;
+        let path = self.root.join(MARKER);
+        ensure!(
+            !fs::symlink_metadata(&path)?.file_type().is_symlink(),
+            "Invalid library marker"
+        );
+        let mut marker: LibraryMarker = serde_json::from_slice(&read_json_bytes(&path)?)?;
+        ensure!(
+            marker.kind == "laut-portable-library" && marker.version == 1,
+            "Unsupported portable library"
+        );
+        marker.collections = collections;
+        let data = serde_json::to_vec_pretty(&marker)?;
+        ensure!(
+            data.len() as u64 <= crate::MAX_JSON_BYTES,
+            "Library collections exceed the local document size limit"
+        );
+        atomic_write(&path, &data)
     }
     /// Returns an owner only for an explicitly marked Rust library, never the Swift library.
     pub fn owner(path: &Path) -> Result<Option<(Self, String)>> {
@@ -263,6 +323,48 @@ impl Library {
         );
         session.dirty = false;
         Ok(())
+    }
+}
+
+fn validate_collections(collections: &[Collection]) -> Result<()> {
+    ensure!(collections.len() <= 1_000, "Too many library collections");
+    let mut ids = std::collections::BTreeSet::new();
+    let mut names = std::collections::BTreeSet::new();
+    let mut membership_count = 0usize;
+    for collection in collections {
+        ensure!(
+            uuid::Uuid::parse_str(&collection.id).is_ok()
+                && ids.insert(collection.id.to_uppercase()),
+            "Invalid or duplicate collection ID"
+        );
+        let name = collection.name.trim();
+        ensure!(
+            !name.is_empty() && name.chars().count() <= 120 && names.insert(name.to_lowercase()),
+            "Invalid or duplicate collection name"
+        );
+        membership_count = membership_count.saturating_add(collection.recording_ids.len());
+        ensure!(
+            membership_count <= 100_000,
+            "Too many collection memberships"
+        );
+        let mut recordings = std::collections::BTreeSet::new();
+        ensure!(
+            collection.recording_ids.iter().all(|id| {
+                uuid::Uuid::parse_str(id).is_ok() && recordings.insert(id.to_uppercase())
+            }),
+            "Invalid or duplicate recording in collection"
+        );
+    }
+    Ok(())
+}
+
+fn normalise_collections(collections: &mut [Collection]) {
+    for collection in collections {
+        collection.id = collection.id.to_uppercase();
+        collection.name = collection.name.trim().to_owned();
+        for id in &mut collection.recording_ids {
+            *id = id.to_uppercase();
+        }
     }
 }
 

@@ -1,8 +1,10 @@
-# Laut 0.1.0 alpha
+# Laut 0.2.0
 
-This is the first public build of the cross-platform Rust application.
+This is the second public alpha of the cross-platform Rust application.
 
 Laut transcribes files and public YouTube audio locally, separates speakers, provides a readable and editable transcript workspace, links reviewed PDF slides and supports local search and source-linked AI analysis. No account or cloud transcription is required.
+
+Version 0.2.0 adds event/topic collections, guided local-model setup, stronger evidence-oriented search, a more compact transcript workspace and a persistent mini player while navigating Sources, Search, Models or Settings.
 
 ## Before using it for important work
 

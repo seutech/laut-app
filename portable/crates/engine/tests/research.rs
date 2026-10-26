@@ -1,6 +1,7 @@
 use anyhow::Result;
 use laut_engine::{
     Session,
+    library::Library,
     research::{self, Corpus, Finding, Inference},
 };
 use serde_json::json;
@@ -16,6 +17,47 @@ fn session() -> Session {
         source: "/fixture/recording.json".into(),
         dirty: false,
     }
+}
+#[test]
+fn library_corpus_respects_an_event_collection_scope() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::write(
+        source.join("recording.json"),
+        include_bytes!("../../../fixtures/conversation.json"),
+    )
+    .unwrap();
+    let library = Library::create(&temp.path().join("library")).unwrap();
+    let first = library
+        .import(&Session::open(&source).unwrap())
+        .unwrap()
+        .session
+        .document
+        .view()
+        .id;
+    let mut second = Session::open(&source).unwrap();
+    let mut raw = second.document.raw().clone();
+    raw["id"] = json!(uuid::Uuid::new_v4().to_string());
+    raw["title"] = json!("Another event");
+    second.document = laut_core::Document::from_value(raw).unwrap();
+    let second = library.import(&second).unwrap().session.document.view().id;
+
+    let selected = BTreeSet::from([first.clone()]);
+    let event = Corpus::from_library_ids(&library, Some(&selected), false).unwrap();
+    assert!(
+        event
+            .sources
+            .iter()
+            .all(|source| source.recording_id == first)
+    );
+    let whole = Corpus::from_library_ids(&library, None, false).unwrap();
+    assert!(
+        whole
+            .sources
+            .iter()
+            .any(|source| source.recording_id == second)
+    );
 }
 struct Fake {
     key: String,
@@ -407,4 +449,74 @@ fn exact_years_outweigh_a_generic_semantic_match() {
     .unwrap();
     assert_eq!(found.hits[0].source.id, "1");
     assert_eq!(found.hits[2].source.id, "2");
+}
+
+#[test]
+fn weak_similarity_is_not_presented_as_evidence_but_literal_hits_remain() {
+    struct Ranker;
+    impl Inference for Ranker {
+        fn embedding_key(&self) -> &str {
+            "relevance-floor"
+        }
+        fn generation_key(&self) -> &str {
+            "unused"
+        }
+        fn embed(&self, texts: &[String], query: bool, _: &AtomicBool) -> Result<Vec<Vec<f32>>> {
+            Ok(texts
+                .iter()
+                .map(|text| {
+                    let similarity: f32 = if query {
+                        1.
+                    } else if text.contains("SpaceX") {
+                        0.15
+                    } else {
+                        0.39
+                    };
+                    let mut vector = vec![0.; 16];
+                    vector[0] = similarity;
+                    vector[1] = (1. - similarity * similarity).sqrt();
+                    vector
+                })
+                .collect())
+        }
+        fn generate(
+            &self,
+            _: &str,
+            _: &str,
+            _: &[String],
+            _: &str,
+            _: &AtomicBool,
+        ) -> Result<Vec<Finding>> {
+            unreachable!()
+        }
+    }
+    let mut corpus = Corpus::from_session(&session(), false);
+    let base = corpus.sources[0].clone();
+    corpus.sources = [
+        ("literal", "SpaceX is named directly."),
+        ("weak", "A generic network passage with no named company."),
+    ]
+    .into_iter()
+    .map(|(id, text)| {
+        let mut source = base.clone();
+        source.id = id.into();
+        source.text = text.into();
+        source
+    })
+    .collect();
+    let cache = tempfile::tempdir().unwrap();
+    let found = research::search(
+        &Ranker,
+        &corpus,
+        cache.path(),
+        "SpaceX",
+        &AtomicBool::new(false),
+        |_, _| {},
+    )
+    .unwrap();
+    assert_eq!(found.hits.len(), 1);
+    assert_eq!(found.hits[0].source.id, "literal");
+    assert_eq!(found.hits[0].matched_terms, ["spacex"]);
+    assert_eq!(found.weak_hits.len(), 1);
+    assert_eq!(found.weak_hits[0].source.id, "weak");
 }

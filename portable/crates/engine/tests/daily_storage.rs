@@ -1,7 +1,7 @@
 use laut_core::Command;
 use laut_engine::{
     Session,
-    library::Library,
+    library::{Collection, Library},
     preferences::{Draft, Preferences, StateStore},
 };
 use std::{collections::BTreeMap, fs};
@@ -82,6 +82,31 @@ fn older_preferences_get_readable_workspace_defaults() {
     assert!(prefs.follow_playback && prefs.show_navigation);
 }
 #[test]
+fn collections_round_trip_and_reject_ambiguous_or_invalid_members() {
+    let temp = tempfile::tempdir().unwrap();
+    let (lib, id) = library(temp.path());
+    let mut event = Collection::new("Telekom AI Investor Day");
+    event.id = event.id.to_lowercase();
+    event.name = "  Telekom AI Investor Day  ".into();
+    event.recording_ids.push(id.to_lowercase());
+    lib.save_collections(&[event.clone()]).unwrap();
+    event.id = event.id.to_uppercase();
+    event.name = event.name.trim().into();
+    event.recording_ids[0] = id.clone();
+    assert_eq!(lib.collections().unwrap(), [event.clone()]);
+
+    let mut duplicate_name = Collection::new("telekom ai investor day");
+    duplicate_name.recording_ids.push(id.clone());
+    assert!(
+        lib.save_collections(&[event.clone(), duplicate_name])
+            .is_err()
+    );
+    assert_eq!(lib.collections().unwrap(), [event.clone()]);
+
+    event.recording_ids.push(id);
+    assert!(lib.save_collections(&[event]).is_err());
+}
+#[test]
 fn invalid_playback_speed_is_normalized_without_losing_preferences() {
     let temp = tempfile::tempdir().unwrap();
     let store = StateStore::new(temp.path().join("state"));
@@ -113,10 +138,14 @@ fn backup_restore_keeps_media_history_and_previous_version_and_rejects_tampering
     lib.save(&mut loaded.session, &mut loaded.revision).unwrap();
     let media = loaded.session.source.parent().unwrap().join("extra.pdf");
     fs::write(&media, b"local original attachment").unwrap();
+    let mut collection = Collection::new("Investor day");
+    collection.recording_ids.push(id.clone());
+    lib.save_collections(&[collection.clone()]).unwrap();
     let backup = temp.path().join("backup");
     lib.backup(&backup).unwrap();
     assert!(lib.backup(&backup).is_err());
     let restored = Library::restore_backup(&backup, &temp.path().join("restored")).unwrap();
+    assert_eq!(restored.collections().unwrap(), [collection]);
     let mut re = restored.load(&id).unwrap();
     assert_eq!(re.session.document.raw(), loaded.session.document.raw());
     assert_eq!(

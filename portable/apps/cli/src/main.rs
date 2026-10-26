@@ -1,10 +1,10 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use clap::{Parser, Subcommand};
 use laut_core::Command;
 use laut_engine::{
     Session,
     jobs::{JobConfig, transcribe},
-    library::Library,
+    library::{Collection, Library},
     write_new,
 };
 use std::{
@@ -90,6 +90,17 @@ enum Action {
     },
     LibraryList {
         root: PathBuf,
+    },
+    /// List event/topic collections stored with the portable library.
+    LibraryCollections {
+        root: PathBuf,
+    },
+    /// Create or replace one named collection without moving or duplicating recordings.
+    LibraryCollectionSet {
+        root: PathBuf,
+        name: String,
+        #[arg(long = "recording", required = true)]
+        recordings: Vec<String>,
     },
     /// Logical file sizes and recoverable trash. Does not follow symbolic links.
     LibraryStorage {
@@ -461,6 +472,45 @@ fn main() -> Result<()> {
             "{}",
             serde_json::to_string_pretty(&Library::open(&root)?.catalog()?)?
         ),
+        Action::LibraryCollections { root } => println!(
+            "{}",
+            serde_json::to_string_pretty(&Library::open(&root)?.collections()?)?
+        ),
+        Action::LibraryCollectionSet {
+            root,
+            name,
+            recordings,
+        } => {
+            let library = Library::open(&root)?;
+            let active: std::collections::BTreeSet<_> = library
+                .catalog()?
+                .entries
+                .into_iter()
+                .map(|entry| entry.id.to_uppercase())
+                .collect();
+            let recordings: Vec<_> = recordings.into_iter().map(|id| id.to_uppercase()).collect();
+            ensure!(
+                recordings.iter().all(|id| active.contains(id)),
+                "Every collection recording must exist in the active library"
+            );
+            let mut collections = library.collections()?;
+            let trimmed = name.trim();
+            let collection = if let Some(existing) = collections
+                .iter_mut()
+                .find(|collection| collection.name.eq_ignore_ascii_case(trimmed))
+            {
+                existing.name = trimmed.into();
+                existing.recording_ids = recordings;
+                existing.clone()
+            } else {
+                let mut collection = Collection::new(trimmed);
+                collection.recording_ids = recordings;
+                collections.push(collection.clone());
+                collection
+            };
+            library.save_collections(&collections)?;
+            println!("{}", serde_json::to_string_pretty(&collection)?);
+        }
         Action::LibraryImport { root, recording } => {
             let loaded = Library::open(&root)?.import(&Session::open(&recording)?)?;
             println!("{}", loaded.session.source.display());

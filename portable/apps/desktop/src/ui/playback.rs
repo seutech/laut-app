@@ -158,15 +158,15 @@ impl LautApp {
         let mut zoom_change = None;
         egui::Frame::new()
             .fill(fill)
-            .corner_radius(10)
-            .inner_margin(egui::Margin::symmetric(12, 9))
+            .corner_radius(8)
+            .inner_margin(egui::Margin::symmetric(11, 6))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.strong("Audio");
-                    ui.small(if en {
-                        "Click or drag to seek"
+                    ui.weak(if en {
+                        "Click or drag"
                     } else {
-                        "Klicken oder ziehen zum Spulen"
+                        "Klicken oder ziehen"
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
@@ -211,7 +211,7 @@ impl LautApp {
                     }
                     let start = self.playback.waveform_start;
                     let (rect, response) = ui.allocate_exact_size(
-                        egui::vec2(ui.available_width(), 52.),
+                        egui::vec2(ui.available_width(), 36.),
                         egui::Sense::click_and_drag(),
                     );
                     let bars = (rect.width() / 3.).max(1.) as usize;
@@ -291,7 +291,7 @@ impl LautApp {
                             "Wellenform wird lokal berechnet …"
                         }));
                     });
-                    ui.add_space(12.);
+                    ui.add_space(6.);
                 }
             });
         if let Some(zoom) = zoom_change
@@ -323,6 +323,103 @@ impl LautApp {
         self.playback.scroll_requested = true;
         let playing = self.player.as_ref().is_some_and(|p| p.playing());
         self.seek_audio(self.seek, playing);
+    }
+
+    /// Keeps an active recording controllable while the user works in Sources,
+    /// Search, Models or Settings. The full transport remains in the transcript.
+    pub(super) fn global_audio_bar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let Some(recording) = &self.view else {
+            return;
+        };
+        let title = recording.title.clone();
+        let duration = recording.duration;
+        if let Some(player) = &self.player
+            && !player.pending()
+            && !self.dragging_seek
+        {
+            self.seek = player.position().min(duration);
+        }
+        let playing = self.player.as_ref().is_some_and(|player| player.playing());
+        let pending = self.player.as_ref().is_some_and(|player| player.pending());
+
+        ui.horizontal(|ui| {
+            ui.strong(self.l("Audio", "Audio"));
+            ui.add_sized(
+                [190., 22.],
+                egui::Label::new(RichText::new(title).size(12.)).truncate(),
+            )
+            .on_hover_text(
+                self.view
+                    .as_ref()
+                    .map(|r| r.title.as_str())
+                    .unwrap_or_default(),
+            );
+            if ui
+                .small_button("−5")
+                .on_hover_text(self.l("5 Sekunden zurück", "Back 5 seconds"))
+                .clicked()
+            {
+                self.jump_audio(self.seek - 5.);
+            }
+            let play_label = if pending {
+                "■"
+            } else if playing {
+                "❚❚"
+            } else {
+                "▶"
+            };
+            if ui
+                .button(play_label)
+                .on_hover_text(if pending {
+                    self.l("Start abbrechen", "Cancel start")
+                } else if playing {
+                    self.l("Pausieren", "Pause")
+                } else {
+                    self.l("Weiter abspielen", "Resume playback")
+                })
+                .clicked()
+            {
+                self.toggle_audio();
+            }
+            if ui
+                .small_button("+5")
+                .on_hover_text(self.l("5 Sekunden vor", "Forward 5 seconds"))
+                .clicked()
+            {
+                self.jump_audio(self.seek + 5.);
+            }
+            ui.spacing_mut().slider_width = (ui.available_width() - 290.).max(80.);
+            let response = ui
+                .add(egui::Slider::new(&mut self.seek, 0.0..=duration.max(0.1)).show_value(false));
+            if response.drag_started() {
+                self.dragging_seek = true;
+            }
+            if response.drag_stopped() || (response.changed() && !response.dragged()) {
+                self.jump_audio(self.seek);
+                self.dragging_seek = false;
+            }
+            ui.monospace(format!(
+                "{} / {}",
+                timestamp(self.seek),
+                timestamp(duration)
+            ));
+            if pending
+                || self
+                    .player
+                    .as_ref()
+                    .is_some_and(|player| player.buffering())
+            {
+                ui.spinner();
+            }
+            if ui
+                .button(self.l("Transkript", "Transcript"))
+                .on_hover_text(self.l("Zum Transkript zurück", "Return to transcript"))
+                .clicked()
+            {
+                self.playback.scroll_requested = true;
+                self.show_section(Section::Library, ctx);
+            }
+        });
     }
 
     pub(super) fn audio_controls(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
@@ -366,16 +463,16 @@ impl LautApp {
                 }
                 let label = if pending {
                     if en {
-                        "Cancel audio"
+                        "■ Cancel"
                     } else {
-                        "Audio abbrechen"
+                        "■ Abbrechen"
                     }
                 } else if playing {
-                    "Pause"
+                    "❚❚ Pause"
                 } else if en {
-                    "Play"
+                    "▶ Play"
                 } else {
-                    "Abspielen"
+                    "▶ Abspielen"
                 };
                 if ui
                     .button(label)
@@ -470,7 +567,6 @@ impl LautApp {
                         self.status = error.to_string();
                     }
                 }
-                ui.separator();
                 if ui
                     .checkbox(
                         &mut self.daily.preferences.follow_playback,
@@ -484,12 +580,11 @@ impl LautApp {
                 {
                     self.playback.last_followed = None;
                 }
-                ui.separator();
                 let field = ui.add(
                     egui::TextEdit::singleline(&mut self.playback.jump)
                         .desired_width(72.)
                         .hint_text("mm:ss"),
-                );
+                ).on_hover_text(if en { "Jump to mm:ss or hh:mm:ss" } else { "Zu mm:ss oder hh:mm:ss springen" });
                 let at = parse_time(&self.playback.jump).filter(|t| *t <= duration);
                 let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 if ui
@@ -507,12 +602,6 @@ impl LautApp {
                         "Enter a time within the recording."
                     } else {
                         "Zeitpunkt innerhalb der Aufnahme eingeben."
-                    });
-                } else {
-                    ui.small(if en {
-                        "mm:ss or hh:mm:ss"
-                    } else {
-                        "mm:ss oder hh:mm:ss"
                     });
                 }
             });

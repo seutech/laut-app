@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title">
+  <title id="title">Laut waveform mark</title>
+  <rect x="96" y="96" width="832" height="832" rx="224" fill="#008F88"/>
+  <g fill="#FFFFFF">
+    <rect x="302" y="397" width="44" height="230" rx="22"/>
+    <rect x="396" y="337" width="44" height="350" rx="22"/>
+    <rect x="490" y="267" width="44" height="490" rx="22"/>
+    <rect x="584" y="357" width="44" height="310" rx="22"/>
+    <rect x="678" y="417" width="44" height="190" rx="22"/>
+  </g>
+</svg>

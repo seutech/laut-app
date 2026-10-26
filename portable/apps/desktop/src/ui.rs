@@ -14,7 +14,7 @@ use laut_core::{Command, Recording, paragraphs, plain_text, search, timestamp, w
 use laut_engine::{
     Session,
     jobs::JobConfig,
-    library::{Catalog, Entry, Library, Revision},
+    library::{Catalog, Collection, Entry, Library, Revision},
 };
 use shell::{Section, ShellState};
 use std::{
@@ -58,6 +58,10 @@ pub struct LautApp {
     library_root: String,
     library_entries: Vec<Entry>,
     library_warnings: Vec<String>,
+    collections: Vec<Collection>,
+    collection_open: bool,
+    collection_editing: Option<Collection>,
+    collection_remove: Option<String>,
     view: Option<Recording>,
     text: String,
     // Character ranges into the reading text, including accurate words where available.
@@ -111,6 +115,10 @@ impl LautApp {
                 .unwrap_or_default(),
             library_entries: vec![],
             library_warnings: vec![],
+            collections: vec![],
+            collection_open: false,
+            collection_editing: None,
+            collection_remove: None,
             view: None,
             text: String::new(),
             spans: vec![],
@@ -509,7 +517,6 @@ impl LautApp {
                 Event::CaptureSaved(result) => self.capture_saved(result, ctx, false),
                 Event::Opened(result) => {
                     self.conference.clear();
-                    self.research.search = None;
                     self.processing.clear_analysis();
                     self.busy = false;
                     match result {
@@ -521,10 +528,13 @@ impl LautApp {
                             self.session = Some(s);
                             self.managed = managed;
                             if let Some((library, _)) = &self.managed {
+                                self.collections = library.collections().unwrap_or_default();
                                 let root = library.root.to_string_lossy().into_owned();
                                 if self.library_root != root {
                                     self.library_entries.clear();
                                     self.library_warnings.clear();
+                                    self.collections.clear();
+                                    self.shell.selected_collection = None;
                                     self.shell.catalog_loaded = false;
                                 }
                                 self.daily.preferences.library = Some(PathBuf::from(&root));
@@ -553,7 +563,7 @@ impl LautApp {
                             self.start_waveform(ctx);
                             if let Some(hit) = self.daily.pending_hit.take() {
                                 if let (Some(id), Some(time)) = (hit.segment_id, hit.time) {
-                                    self.tab = 1;
+                                    self.tab = 0;
                                     self.select(id, time, false);
                                 } else if let (Some(id), Some(page)) = (hit.document_id, hit.page) {
                                     self.conference.open = true;
@@ -629,6 +639,14 @@ impl LautApp {
                     self.busy = false;
                     match result {
                         Ok((library, catalog)) => {
+                            let collections = match library.collections() {
+                                Ok(collections) => collections,
+                                Err(error) => {
+                                    self.error = true;
+                                    self.status = error.to_string();
+                                    continue;
+                                }
+                            };
                             if self
                                 .managed
                                 .as_ref()
@@ -649,11 +667,21 @@ impl LautApp {
                                 self.conference.clear();
                                 self.processing.clear_analysis();
                                 self.research.search = None;
+                                self.shell.selected_collection = None;
                             }
                             self.daily.preferences.library = Some(library.root.clone());
                             self.library_root = library.root.to_string_lossy().into_owned();
                             self.library_entries = catalog.entries;
                             self.library_warnings = catalog.warnings;
+                            self.collections = collections;
+                            if self.shell.selected_collection.as_ref().is_some_and(|id| {
+                                !self
+                                    .collections
+                                    .iter()
+                                    .any(|collection| &collection.id == id)
+                            }) {
+                                self.shell.selected_collection = None;
+                            }
                             self.error = false;
                             self.status = self.l("Bibliothek geladen", "Library loaded").into();
                         }
@@ -705,11 +733,33 @@ impl LautApp {
         }
     }
     fn toolbar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        ui.horizontal_wrapped(|ui| {
+        let accent = if ui.visuals().dark_mode {
+            egui::Color32::from_rgb(16, 151, 145)
+        } else {
+            egui::Color32::from_rgb(0, 143, 136)
+        };
+        ui.horizontal(|ui| {
+            if self.research.return_to_results && self.research.search.is_some() {
+                if ui
+                    .button(self.l("← Zur Trefferliste", "← Back to results"))
+                    .clicked()
+                {
+                    self.conference.open = false;
+                    self.conference.clear();
+                    self.research.return_to_results = false;
+                    self.show_section(Section::Search, ctx);
+                }
+                ui.separator();
+            }
             if ui
                 .add_enabled(
                     !self.busy,
-                    egui::Button::new(self.l("+ Importieren", "+ Import")),
+                    egui::Button::new(
+                        RichText::new(self.l("+ Importieren", "+ Import"))
+                            .color(egui::Color32::WHITE),
+                    )
+                    .fill(accent)
+                    .stroke(egui::Stroke::NONE),
                 )
                 .clicked()
             {
@@ -718,62 +768,62 @@ impl LautApp {
             if ui
                 .add_enabled(
                     !self.busy,
-                    egui::Button::new(self.l("Link hinzufügen", "Add link")),
+                    egui::Button::new(self.l("YouTube-Link", "YouTube link")),
                 )
                 .clicked()
             {
                 self.show_section(Section::Sources, ctx);
             }
-            ui.separator();
             self.recording_buttons(ui);
-            ui.separator();
-            ui.menu_button(self.l("Ablage", "File"), |ui| {
-                if ui
-                    .add_enabled(
-                        !self.busy,
-                        egui::Button::new(self.l("Projekt öffnen …", "Open project …")),
-                    )
-                    .clicked()
-                {
-                    ui.close();
-                    if let Some(path) = rfd::FileDialog::new()
-                        .add_filter("Laut recording", &["json"])
-                        .pick_file()
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.menu_button(self.l("Ablage", "File"), |ui| {
+                    if ui
+                        .add_enabled(
+                            !self.busy,
+                            egui::Button::new(self.l("Projekt öffnen …", "Open project …")),
+                        )
+                        .clicked()
                     {
-                        self.load(path, ctx.clone());
+                        ui.close();
+                        if let Some(path) = rfd::FileDialog::new()
+                            .add_filter("Laut recording", &["json"])
+                            .pick_file()
+                        {
+                            self.load(path, ctx.clone());
+                        }
                     }
-                }
-                if ui
-                    .add_enabled(
-                        !self.busy && self.session.is_some(),
-                        egui::Button::new(
-                            self.l("Projektkopie speichern …", "Save project copy …"),
-                        ),
-                    )
-                    .clicked()
-                {
-                    ui.close();
-                    self.save_project_copy(ctx);
-                }
-                if ui
-                    .add_enabled(
-                        self.session.is_some(),
-                        egui::Button::new(self.l("Exportieren …", "Export …")),
-                    )
-                    .clicked()
-                {
-                    self.daily.export_open = true;
-                    ui.close();
-                }
-                ui.separator();
-                if ui
-                    .button(self.l("Entwürfe wiederherstellen …", "Recover drafts …"))
-                    .clicked()
-                {
-                    self.reload_drafts();
-                    self.daily.recovery_open = true;
-                    ui.close();
-                }
+                    if ui
+                        .add_enabled(
+                            !self.busy && self.session.is_some(),
+                            egui::Button::new(
+                                self.l("Projektkopie speichern …", "Save project copy …"),
+                            ),
+                        )
+                        .clicked()
+                    {
+                        ui.close();
+                        self.save_project_copy(ctx);
+                    }
+                    if ui
+                        .add_enabled(
+                            self.session.is_some(),
+                            egui::Button::new(self.l("Exportieren …", "Export …")),
+                        )
+                        .clicked()
+                    {
+                        self.daily.export_open = true;
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui
+                        .button(self.l("Entwürfe wiederherstellen …", "Recover drafts …"))
+                        .clicked()
+                    {
+                        self.reload_drafts();
+                        self.daily.recovery_open = true;
+                        ui.close();
+                    }
+                });
             });
         });
     }
@@ -899,9 +949,9 @@ impl LautApp {
         let title = r.title.clone();
         let duration = r.duration;
         ui.horizontal(|ui| {
-            ui.heading(title);
+            ui.label(RichText::new(title).size(22.).strong());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.menu_button(self.l("Werkzeuge", "Tools"), |ui| {
+                ui.menu_button("•••", |ui| {
                     if ui
                         .add_enabled(
                             !self.busy,
@@ -931,14 +981,17 @@ impl LautApp {
                         self.show_section(Section::Search, ctx);
                         ui.close();
                     }
-                });
+                })
+                .response
+                .on_hover_text(self.l("Werkzeuge", "Tools"));
             });
         });
+        let mut source_metadata = false;
         if let Some(source) = self.session.as_ref().map(|s| &s.document.raw()["source"])
             && let Some(url) = source["url"].as_str()
             && let Ok(url) = laut_engine::downloads::youtube_url(url)
         {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.hyperlink_to(self.l("YouTube-Quelle", "YouTube source"), url);
                 if let Some(publisher) = source["publisher"].as_str() {
                     ui.small(publisher);
@@ -946,18 +999,28 @@ impl LautApp {
                 if let Some(date) = source["publishedOn"].as_str() {
                     ui.small(date);
                 }
+                ui.weak("·");
+                ui.small(format!(
+                    "{} · {} {}",
+                    timestamp(duration),
+                    r.segments.len(),
+                    self.l("Abschnitte", "segments")
+                ));
             });
+            source_metadata = true;
         }
-        ui.label(
-            RichText::new(format!(
-                "{} · {} {}",
-                timestamp(duration),
-                r.segments.len(),
-                self.l("Abschnitte", "segments")
-            ))
-            .small()
-            .weak(),
-        );
+        if !source_metadata {
+            ui.label(
+                RichText::new(format!(
+                    "{} · {} {}",
+                    timestamp(duration),
+                    r.segments.len(),
+                    self.l("Abschnitte", "segments")
+                ))
+                .small()
+                .weak(),
+            );
+        }
         if self
             .session
             .as_ref()
@@ -1007,60 +1070,72 @@ impl LautApp {
             self.waveform_view(ui);
             self.audio_controls(ui, ctx);
         });
+        ui.add_space(4.);
+        let mode_fill = if ui.visuals().dark_mode {
+            egui::Color32::from_rgb(38, 40, 43)
+        } else {
+            egui::Color32::from_rgb(245, 247, 248)
+        };
+        egui::Frame::new()
+            .fill(mode_fill)
+            .corner_radius(8)
+            .inner_margin(egui::Margin::symmetric(5, 4))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.selectable_value(
+                        &mut self.tab,
+                        0,
+                        if self.english { "Read" } else { "Lesen" },
+                    );
+                    ui.selectable_value(
+                        &mut self.tab,
+                        1,
+                        if self.english { "Edit" } else { "Bearbeiten" },
+                    );
+                    ui.selectable_value(
+                        &mut self.tab,
+                        2,
+                        if self.english { "Speakers" } else { "Sprecher" },
+                    );
+                    ui.selectable_value(
+                        &mut self.tab,
+                        3,
+                        if self.english {
+                            "Notes & slides"
+                        } else {
+                            "Notizen & Folien"
+                        },
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let raw = self.session.as_ref().unwrap().document.raw();
+                        let undo = raw["editHistory"]["undo"]
+                            .as_array()
+                            .is_some_and(|a| !a.is_empty());
+                        let redo = raw["editHistory"]["redo"]
+                            .as_array()
+                            .is_some_and(|a| !a.is_empty());
+                        if ui
+                            .add_enabled(
+                                redo && !self.busy,
+                                egui::Button::new(self.l("Wiederholen", "Redo")),
+                            )
+                            .clicked()
+                        {
+                            self.command(Command::Redo);
+                        }
+                        if ui
+                            .add_enabled(
+                                undo && !self.busy,
+                                egui::Button::new(self.l("Rückgängig", "Undo")),
+                            )
+                            .clicked()
+                        {
+                            self.command(Command::Undo);
+                        }
+                    });
+                });
+            });
         ui.add_space(5.);
-        ui.horizontal(|ui| {
-            ui.selectable_value(
-                &mut self.tab,
-                0,
-                if self.english { "Read" } else { "Lesen" },
-            );
-            ui.selectable_value(
-                &mut self.tab,
-                1,
-                if self.english { "Edit" } else { "Bearbeiten" },
-            );
-            ui.selectable_value(
-                &mut self.tab,
-                2,
-                if self.english { "Speakers" } else { "Sprecher" },
-            );
-            ui.selectable_value(
-                &mut self.tab,
-                3,
-                if self.english {
-                    "Notes & slides"
-                } else {
-                    "Notizen & Folien"
-                },
-            );
-            ui.separator();
-            let raw = self.session.as_ref().unwrap().document.raw();
-            let undo = raw["editHistory"]["undo"]
-                .as_array()
-                .is_some_and(|a| !a.is_empty());
-            let redo = raw["editHistory"]["redo"]
-                .as_array()
-                .is_some_and(|a| !a.is_empty());
-            if ui
-                .add_enabled(
-                    undo && !self.busy,
-                    egui::Button::new(self.l("Rückgängig", "Undo")),
-                )
-                .clicked()
-            {
-                self.command(Command::Undo);
-            }
-            if ui
-                .add_enabled(
-                    redo && !self.busy,
-                    egui::Button::new(self.l("Wiederholen", "Redo")),
-                )
-                .clicked()
-            {
-                self.command(Command::Redo);
-            }
-        });
-        ui.separator();
         match self.tab {
             0 => {
                 let search_hint = self
@@ -1080,7 +1155,7 @@ impl LautApp {
                             .desired_width((ui.available_width() - 110.).max(140.))
                             .hint_text(search_hint),
                     );
-                    if ui.button(self.l("Alles kopieren", "Copy all")).clicked() {
+                    if ui.button(self.l("Text kopieren", "Copy text")).clicked() {
                         ctx.copy_text(self.text.clone());
                         self.status = self.l("Gesamter Text kopiert", "All text copied").into();
                         self.error = false;
@@ -1428,28 +1503,34 @@ impl eframe::App for LautApp {
         let dark_mode = root.visuals().dark_mode;
         let panel_fill = root.visuals().panel_fill;
         egui::Panel::left("app-sidebar")
-            .default_size(244.)
-            .size_range(210.0..=310.0)
+            .default_size(232.)
+            .size_range(214.0..=292.0)
             .resizable(true)
             .frame(
                 egui::Frame::new()
                     .fill(if dark_mode {
-                        egui::Color32::from_rgb(35, 36, 39)
+                        egui::Color32::from_rgb(34, 36, 38)
                     } else {
-                        egui::Color32::from_rgb(241, 242, 245)
+                        egui::Color32::from_rgb(246, 248, 249)
                     })
-                    .inner_margin(egui::Margin::symmetric(14, 10)),
+                    .inner_margin(egui::Margin::symmetric(13, 9)),
             )
             .show(root, |ui| self.app_sidebar(ui, ctx));
         if ctx.input(|i| i.viewport().close_requested()) && (self.busy || !self.save_recovery()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.close_pending = true;
         }
-        egui::Panel::top("toolbar").show(root, |ui| {
-            ui.add_space(3.);
-            self.toolbar(ui, ctx);
-            ui.add_space(3.);
-        });
+        egui::Panel::top("toolbar")
+            .frame(
+                egui::Frame::new()
+                    .fill(panel_fill)
+                    .inner_margin(egui::Margin::symmetric(10, 6))
+                    .stroke(egui::Stroke::new(
+                        0.5,
+                        root.visuals().widgets.inactive.bg_stroke.color,
+                    )),
+            )
+            .show(root, |ui| self.toolbar(ui, ctx));
         if self.recording.handle.is_some() {
             egui::Panel::top("recording-status").show(root, |ui| self.recording_bar(ui));
         }
@@ -1480,11 +1561,28 @@ impl eframe::App for LautApp {
                 self.draft_status(ui);
             });
         });
+        if self.player.is_some() && self.shell.section != Section::Library {
+            egui::Panel::bottom("global-audio")
+                .frame(
+                    egui::Frame::new()
+                        .fill(if dark_mode {
+                            egui::Color32::from_rgb(30, 47, 49)
+                        } else {
+                            egui::Color32::from_rgb(235, 247, 246)
+                        })
+                        .inner_margin(egui::Margin::symmetric(10, 6))
+                        .stroke(egui::Stroke::new(
+                            0.5,
+                            root.visuals().widgets.inactive.bg_stroke.color,
+                        )),
+                )
+                .show(root, |ui| self.global_audio_bar(ui, ctx));
+        }
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
                     .fill(panel_fill)
-                    .inner_margin(egui::Margin::symmetric(24, 20)),
+                    .inner_margin(egui::Margin::symmetric(22, 14)),
             )
             .show(root, |ui| match self.shell.section {
                 Section::Library => self.body(ui, ctx),
@@ -1498,6 +1596,7 @@ impl eframe::App for LautApp {
         self.conference_dialog(ctx);
         self.dropped_media(ctx);
         self.library_dialog(ctx);
+        self.collection_dialog(ctx);
         self.storage_dialog(ctx);
         self.daily_dialogs(ctx);
         self.persist_daily(ctx);

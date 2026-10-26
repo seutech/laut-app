@@ -2054,7 +2054,7 @@ dependencies = [
 
 [[package]]
 name = "laut-capture"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "block2 0.6.2",
@@ -2067,7 +2067,7 @@ dependencies = [
 
 [[package]]
 name = "laut-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2079,7 +2079,7 @@ dependencies = [
 
 [[package]]
 name = "laut-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "serde",
@@ -2090,7 +2090,7 @@ dependencies = [
 
 [[package]]
 name = "laut-engine"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bzip2",
@@ -2110,7 +2110,7 @@ dependencies = [
 
 [[package]]
 name = "laut-portable"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "eframe",

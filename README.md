@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="Resources/Branding/wordmark.png" alt="Laut" width="480">
+  <img src="Resources/Branding/wordmark.svg" alt="Laut" width="360">
 </p>
 
 # Laut
@@ -37,8 +37,8 @@ Laut needs local **FFmpeg** and **FFprobe** for imports, waveform generation, re
 ## First run
 
 1. Open **Settings** and choose or create a library folder.
-2. Open **Models** and install Whisper Base or Whisper Small Q5. Model downloads are explicit, checksum-verified and resumable.
-3. Ensure FFmpeg and FFprobe are detected under **Local programs**.
+2. Open **Models**. The guided setup recommends **Whisper Small Q5** and shows a green **Ready** status only when its model and required local programs are available. Downloads are explicit, checksum-verified and resumable.
+3. Add only the optional workflows you need: YouTube import, speaker separation, semantic search or local AI analysis. Each card installs its required model packages together; existing FFmpeg, FFprobe and bundled workers are detected separately.
 4. Import an audio/video file, or add a public YouTube link under **Sources & jobs**.
 5. Start the queued job. Completed five-minute chunks are checkpointed so long transcriptions can resume.
 6. Review the transcript and speaker assignments before publication. Speaker labels and contextual name suggestions are evidence for editing, not biometric identity claims.
@@ -50,13 +50,14 @@ YouTube support uses pinned local yt-dlp and Deno packages installed from the mo
 - Local Whisper.cpp transcription on CPU with word timing where the model evidence supports it.
 - Persistent multi-file and YouTube job queue with cancellation, checkpoints and verified cache cleanup.
 - Local CPU speaker diarization through sherpa-onnx, including reviewable voice samples and protected manual names.
-- A readable transcript workspace with paragraphs, speaker/time markers, chapters, search, full-text copy, waveform, zoom and pitch-preserving 0.5×–2× playback.
+- A readable transcript workspace with paragraphs, speaker/time markers, chapters, search, full-text copy, waveform, zoom and pitch-preserving 0.5×–2× playback, plus a compact player that stays available across the other app sections.
 - Transcript correction, segment splitting/merging, speaker reassignment and saved undo/redo history.
 - TXT, Markdown, SRT and complete JSON export.
 - Local microphone and meeting capture, with separate microphone/system tracks where the operating system supports it.
 - PDF text extraction, optional OCR, page previews and conservative slide suggestions linked to transcript times.
 - Reversible exclusion of announced video inserts from the reading/export view while retaining the source evidence.
 - Literal and multilingual semantic search across transcripts, notes, saved analysis and PDF pages.
+- Local collections group all recordings from one event or topic and act as one filter, search scope or full-analysis scope without moving or duplicating files.
 - Local Qwen/llama.cpp analysis with source-linked results and no cloud fallback.
 - Verified project copies, library backups, recovery drafts and a reversible library trash.
 - German and English interface.
@@ -81,7 +82,7 @@ Recordings and PDFs can be much larger than transcripts. Temporary download and 
 
 - Windows and Linux packages have not yet had the same real-device coverage as macOS.
 - macOS meeting system audio still needs a successful permission/hardware retest; ordinary file and YouTube work does not depend on it.
-- A complete seven-hour conference run, abrupt power-loss behavior and disk-full behavior still need final real-world measurement.
+- Multi-hour performance on Windows/Linux, abrupt power-loss behavior and disk-full behavior still need broader real-world measurement.
 - Linux system-audio recording, acoustic echo cancellation, video-frame slide detection and automatic semantic chapter generation are not implemented.
 - Name spelling, speaker clusters, summaries, slide matches and OCR require editorial review.
 - The application and release archives are currently unsigned.
