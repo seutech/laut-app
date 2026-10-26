@@ -159,9 +159,18 @@ impl Session {
             &marker,
             b"Copy incomplete. Original project is unchanged.\n",
         )?;
-        for entry in fs::read_dir(staging.path())? {
-            let entry = entry?;
-            fs::rename(entry.path(), destination.join(entry.file_name()))?;
+        // Close the directory enumeration handle before moving its children. Windows can
+        // otherwise reject the rename with ERROR_ACCESS_DENIED while ReadDir is still alive.
+        let staged = fs::read_dir(staging.path())?
+            .map(|entry| {
+                let entry = entry?;
+                Ok((entry.path(), entry.file_name()))
+            })
+            .collect::<std::io::Result<Vec<_>>>()?;
+        for (source, name) in staged {
+            fs::rename(&source, destination.join(&name)).with_context(|| {
+                format!("Cannot publish copied project file {}", source.display())
+            })?;
         }
         fs::remove_file(marker)?;
         Ok(())

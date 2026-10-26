@@ -90,7 +90,7 @@ Please report reproducible problems through [GitHub Issues](https://github.com/s
 
 ## Build from source
 
-Rust is pinned in [`portable/rust-toolchain.toml`](portable/rust-toolchain.toml). Install Git, rustup, Python 3.12+, CMake, a C/C++ compiler and the platform development packages used in [the CI workflow](.github/workflows/portable.yml).
+Rust is pinned in [`portable/rust-toolchain.toml`](portable/rust-toolchain.toml). Install Git, rustup, Python 3.12+, CMake, a C/C++ compiler and the platform development packages used in [the CI workflow](.github/workflows/portable.yml). Building the macOS app currently requires an Xcode toolchain with the macOS 26 SDK because of the Metal bridge used by the local inference stack; the packaged app itself keeps macOS 13 as its deployment target.
 
 ```sh
 git clone https://github.com/seutech/laut-app.git
