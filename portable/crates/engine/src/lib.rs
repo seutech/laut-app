@@ -76,7 +76,8 @@ impl Session {
         ensure!(parent.is_dir(), "Parent directory does not exist");
         let staging = tempfile::Builder::new()
             .prefix(".laut-copy-")
-            .tempdir_in(parent)?;
+            .tempdir_in(parent)
+            .context("Cannot create project-copy staging folder")?;
         let recording = self.document.view();
         let mut copied_document = self.document.raw().clone();
         let mut remapped = std::collections::BTreeMap::new();
@@ -133,7 +134,7 @@ impl Session {
             "Project exceeds the local document size limit"
         );
         ensure!(
-            fs2::available_space(parent)?
+            fs2::available_space(parent).context("Cannot determine available project space")?
                 > total
                     .saturating_add(data.len() as u64)
                     .saturating_add(512 * 1024 * 1024),
@@ -149,30 +150,37 @@ impl Session {
                 "Media changed while copying"
             );
         }
-        fs::write(staging.path().join("recording.json"), &data)?;
-        fs::File::open(staging.path().join("recording.json"))?.sync_all()?;
+        let staged_recording = staging.path().join("recording.json");
+        fs::write(&staged_recording, &data).context("Cannot stage recording.json")?;
+        fs::File::open(&staged_recording)
+            .context("Cannot reopen staged recording.json")?
+            .sync_all()
+            .context("Cannot sync staged recording.json")?;
         // Reserve the destination with create_dir: unlike rename, this cannot replace an
         // empty directory created concurrently. A marker makes an interrupted publish clear.
-        fs::create_dir(destination)?;
+        fs::create_dir(destination).context("Cannot reserve project destination")?;
         let marker = destination.join("COPY-INCOMPLETE");
         fs::write(
             &marker,
             b"Copy incomplete. Original project is unchanged.\n",
-        )?;
+        )
+        .context("Cannot create incomplete-copy marker")?;
         // Close the directory enumeration handle before moving its children. Windows can
         // otherwise reject the rename with ERROR_ACCESS_DENIED while ReadDir is still alive.
-        let staged = fs::read_dir(staging.path())?
+        let staged = fs::read_dir(staging.path())
+            .context("Cannot enumerate staged project")?
             .map(|entry| {
                 let entry = entry?;
                 Ok((entry.path(), entry.file_name()))
             })
-            .collect::<std::io::Result<Vec<_>>>()?;
+            .collect::<std::io::Result<Vec<_>>>()
+            .context("Cannot inspect staged project entry")?;
         for (source, name) in staged {
             fs::rename(&source, destination.join(&name)).with_context(|| {
                 format!("Cannot publish copied project file {}", source.display())
             })?;
         }
-        fs::remove_file(marker)?;
+        fs::remove_file(marker).context("Cannot remove incomplete-copy marker")?;
         Ok(())
     }
 }

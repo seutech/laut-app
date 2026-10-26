@@ -151,7 +151,8 @@ impl Library {
             .truncate(false)
             .read(true)
             .write(true)
-            .open(path)?;
+            .open(&path)
+            .with_context(|| format!("Cannot open library lock {}", path.display()))?;
         if exclusive {
             fs2::FileExt::try_lock_exclusive(&lock)
         } else {
@@ -161,12 +162,14 @@ impl Library {
         Ok(lock)
     }
     pub fn import(&self, session: &Session) -> Result<Loaded> {
-        let _library_lock = self.lock(true)?;
+        let _library_lock = self.lock(true).context("Cannot lock library for import")?;
         let id = uuid::Uuid::parse_str(&session.document.view().id)?
             .to_string()
             .to_uppercase();
-        session.save_copy(&self.root.join(&id))?;
-        self.load(&id)
+        session
+            .save_copy(&self.root.join(&id))
+            .context("Cannot copy project into library")?;
+        self.load(&id).context("Cannot open imported project")
     }
     pub fn load(&self, id: &str) -> Result<Loaded> {
         let folder = self.folder(id)?;
