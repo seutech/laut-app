@@ -1,9 +1,15 @@
-name: Rust
+name: Rust release CI
 
 on:
   push:
+    branches: [main]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
+
+concurrency:
+  group: rust-release-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
