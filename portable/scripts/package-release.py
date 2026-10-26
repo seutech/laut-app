@@ -15,6 +15,7 @@ import zipfile
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 WORKSPACE = ROOT / "portable"
 VERSION = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 
 
 def sha256(path: pathlib.Path) -> str:
@@ -23,6 +24,23 @@ def sha256(path: pathlib.Path) -> str:
         for block in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def add_zip_file(
+    target: zipfile.ZipFile, source: pathlib.Path, archive_name: pathlib.Path
+) -> None:
+    """Add a file with the oldest timestamp supported by the ZIP format.
+
+    Release inputs may deliberately use the Unix epoch for reproducibility. Python's
+    ZIP writer rejects those dates because the format starts in 1980, so normalize
+    the archive metadata while retaining permissions from the source file.
+    """
+    info = zipfile.ZipInfo(archive_name.as_posix(), ZIP_TIMESTAMP)
+    info.create_system = 3
+    info.external_attr = (source.stat().st_mode & 0xFFFF) << 16
+    info.compress_type = zipfile.ZIP_DEFLATED
+    with source.open("rb") as input_file, target.open(info, "w", force_zip64=True) as output:
+        shutil.copyfileobj(input_file, output, length=1024 * 1024)
 
 
 def main() -> None:
@@ -73,7 +91,7 @@ def main() -> None:
             with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as target:
                 for source in sorted(stage.rglob("*")):
                     if source.is_file():
-                        target.write(source, source.relative_to(stage.parent))
+                        add_zip_file(target, source, source.relative_to(stage.parent))
         else:
             archive = args.out / f"{package_name}.tar.gz"
             with tarfile.open(archive, "w:gz") as target:
