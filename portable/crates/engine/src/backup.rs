@@ -58,7 +58,12 @@ fn copy_checked(source: &Path, target: &Path) -> Result<String> {
     let before = media::digest(source)?;
     fs::create_dir_all(target.parent().context("Missing destination parent")?)?;
     fs::copy(source, target)?;
-    fs::File::open(target)?.sync_all()?;
+    fs::OpenOptions::new()
+        .write(true)
+        .open(target)
+        .context("Cannot reopen copied backup file for syncing")?
+        .sync_all()
+        .context("Cannot sync copied backup file")?;
     ensure!(
         before == media::digest(target)? && before == media::digest(source)?,
         "File changed during backup"
@@ -83,9 +88,15 @@ fn publish(stage: tempfile::TempDir, destination: &Path) -> Result<()> {
     fs::create_dir(destination)?;
     let marker = destination.join("COPY-INCOMPLETE");
     fs::write(&marker, b"Incomplete backup or restore; original retained")?;
-    for entry in fs::read_dir(stage.path())? {
-        let e = entry?;
-        fs::rename(e.path(), destination.join(e.file_name()))?;
+    // Drop Windows' directory-enumeration handle before moving entries out of it.
+    let staged = fs::read_dir(stage.path())?
+        .map(|entry| {
+            let entry = entry?;
+            Ok((entry.path(), entry.file_name()))
+        })
+        .collect::<std::io::Result<Vec<_>>>()?;
+    for (source, name) in staged {
+        fs::rename(source, destination.join(name))?;
     }
     fs::remove_file(marker)?;
     #[cfg(unix)]
