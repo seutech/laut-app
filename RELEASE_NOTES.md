@@ -2,7 +2,7 @@
 
 This is the second public alpha of the cross-platform Rust application.
 
-Laut transcribes files and public YouTube audio locally, separates speakers, provides a readable and editable transcript workspace, links reviewed PDF slides and supports local search and source-linked AI analysis. No account or cloud transcription is required.
+Laut transcribes files and public media links locally, separates speakers, provides a readable and editable transcript workspace, links reviewed PDF slides and supports local search and source-linked AI analysis. No account or cloud transcription is required. Optional external text analysis can use the user's own OpenAI/Responses-compatible API access after an exact source preview; credentials stay in the operating-system vault or memory for the current session.
 
 Version 0.2.0 adds event/topic collections, guided local-model setup, stronger evidence-oriented search, a more compact transcript workspace and a persistent mini player while navigating Sources, Search, Models or Settings.
 

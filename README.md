@@ -10,7 +10,7 @@
 
 **Local-first transcription and conference research for macOS, Windows and Linux.**
 
-Laut imports recordings or public media links, transcribes speech locally, separates speakers, links useful PDF slides and turns long events into a searchable research archive. Links can point to an individual YouTube/Vimeo video, compatible podcast episode or media-library page, or a direct media file. Audio, transcripts, corrections, notes and model output remain on your computer. No account, cloud transcription, analytics or API key is required.
+Laut imports recordings or public media links, transcribes speech locally, separates speakers, links useful PDF slides and turns long events into a searchable research archive. Links can point to an individual YouTube/Vimeo video, compatible podcast episode or media-library page, or a direct media file. Audio, transcripts, corrections and notes remain on your computer. Local search and analysis require no account or API key; an optional, explicitly confirmed external text-analysis mode can use your own OpenAI or Responses-compatible API access.
 
 The current application is written in **Rust** with egui. It is a public alpha: the Mac build is used for real transcript work, while Windows and Linux packages are built and checked in CI but still need wider hardware testing.
 
@@ -58,7 +58,8 @@ Link support uses pinned local yt-dlp and Deno packages installed from the model
 - Reversible exclusion of announced video inserts from the reading/export view while retaining the source evidence.
 - Literal and multilingual semantic search across transcripts, notes, saved analysis and PDF pages.
 - Local collections group all recordings from one event or topic and act as one filter, search scope or full-analysis scope without moving or duplicating files.
-- Local Qwen/llama.cpp analysis with source-linked results and no cloud fallback.
+- Local Qwen/llama.cpp analysis with source-linked results and no silent cloud fallback.
+- Optional external text analysis with per-run source preview, OS credential-vault storage and the same source-ID/exact-quotation checks as local results.
 - Verified project copies, library backups, recovery drafts and a reversible library trash.
 - German and English interface.
 
@@ -66,7 +67,7 @@ The detailed workflow and CLI reference are in [portable/README.md](portable/REA
 
 ## Privacy and storage
 
-Laut does not upload recordings or transcript content. Network access is used only when you explicitly download a model/program or import a URL. Local external executables are invoked without a cloud fallback; Laut cannot impose a system-wide firewall on arbitrary binaries you select yourself.
+By default Laut does not upload recordings or transcript content. Network access is used when you explicitly download a model/program, import a URL, or approve an optional external text-analysis run. Before such an analysis, Laut shows every selected transcript/PDF text passage and the task; audio, video and PDF binaries are never attached automatically. API keys are stored in macOS Keychain, Windows Credential Manager or Linux Secret Service, never in Laut preferences, projects or backups. A session-only key is available when no secure vault exists. Local external executables are invoked without a cloud fallback; Laut cannot impose a system-wide firewall on arbitrary binaries you select yourself.
 
 Default data locations retain the earlier `LautPortable` names for compatibility:
 

@@ -134,6 +134,7 @@ impl StateStore {
     }
     pub fn save_preferences(&self, settings: &Preferences) -> Result<()> {
         ensure!(settings.version == 1, "Unsupported preferences version");
+        settings.research.validate_persistence()?;
         self.prepare()?;
         atomic(
             &self.root.join("preferences.json"),

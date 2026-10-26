@@ -1,5 +1,6 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 mod player;
+mod secrets;
 mod ui;
 mod waveform;
 fn app_icon() -> Option<eframe::egui::IconData> {

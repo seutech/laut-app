@@ -80,6 +80,11 @@ fn older_preferences_get_readable_workspace_defaults() {
     assert_eq!(prefs.reading_font_size, 16.);
     assert_eq!(prefs.playback_speed, 1.);
     assert!(prefs.follow_playback && prefs.show_navigation);
+    assert_eq!(prefs.research.generation_backend, "local");
+    assert_eq!(prefs.research.external_profile, "openai-default");
+    let encoded = serde_json::to_string(&prefs).unwrap();
+    assert!(!encoded.contains("api_key"));
+    assert!(!encoded.contains("Bearer "));
 }
 #[test]
 fn collections_round_trip_and_reject_ambiguous_or_invalid_members() {
@@ -122,6 +127,19 @@ fn invalid_playback_speed_is_normalized_without_losing_preferences() {
         assert!(prefs.english);
         assert_eq!(prefs.playback_speed, 1.);
     }
+}
+#[test]
+fn credentials_embedded_in_an_external_endpoint_are_never_persisted() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = StateStore::new(temp.path().join("state"));
+    let mut preferences = Preferences::default();
+    preferences.research.generation_backend = "external".into();
+    preferences.research.external_endpoint = "https://secret@example.test/v1".into();
+    assert!(store.save_preferences(&preferences).is_err());
+    assert!(!store.root.join("preferences.json").exists());
+    preferences.research.external_endpoint = "https://example.test/v1?api_key=secret".into();
+    assert!(store.save_preferences(&preferences).is_err());
+    assert!(!store.root.join("preferences.json").exists());
 }
 #[test]
 fn backup_restore_keeps_media_history_and_previous_version_and_rejects_tampering() {

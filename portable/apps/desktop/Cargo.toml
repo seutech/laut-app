@@ -18,6 +18,8 @@ eframe = { version = "=0.36.0", default-features = false, features = ["default_f
 rfd = "0.17"
 image = { version = "=0.25.10", default-features = false, features = ["png"] }
 rodio = { version = "=0.23.0", default-features = false, features = ["playback", "symphonia-all"] }
+keyring = "4.2"
+zeroize.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 [lints]

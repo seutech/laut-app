@@ -2,7 +2,7 @@
 mod inference;
 use crate::{Session, jobs::atomic_json, library::Library, media, read_json_bytes};
 use anyhow::{Context, Result, ensure};
-pub use inference::{LocalInference, ResearchConfig};
+pub use inference::{ExternalInference, LocalInference, ResearchConfig, external_responses_url};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -704,7 +704,7 @@ impl Report {
         s
     }
 }
-fn evidence(sources: &BTreeMap<String, Source>) -> String {
+pub fn evidence_text(sources: &BTreeMap<String, Source>) -> String {
     sources
         .iter()
         .map(|(id, s)| format!("[{id}] {}\n{}", s.label, s.text))
@@ -736,24 +736,12 @@ pub fn answer(
         search.fingerprint == corpus.fingerprint(),
         "Sources changed; search again"
     );
-    let mut sources = BTreeMap::new();
-    let mut size = 0;
-    for hit in &search.hits {
-        if size + hit.source.text.len() > 4500 {
-            continue;
-        }
-        size += hit.source.text.len();
-        sources.insert(format!("S{}", sources.len() + 1), hit.source.clone());
-        if sources.len() >= 5 {
-            break;
-        }
-    }
-    ensure!(!sources.is_empty(), "No supporting search passages");
+    let sources = answer_sources(search)?;
     let allowed = sources.keys().cloned().collect::<Vec<_>>();
     let findings = grounded_generation(
         engine,
         question,
-        &evidence(&sources),
+        &evidence_text(&sources),
         (&allowed, &sources),
         language,
         cancel,
@@ -767,6 +755,24 @@ pub fn answer(
         vec![],
         sources,
     ))
+}
+
+/// The exact top passages passed to a text model when answering search results.
+pub fn answer_sources(search: &SearchResult) -> Result<BTreeMap<String, Source>> {
+    let mut sources = BTreeMap::new();
+    let mut size = 0;
+    for hit in &search.hits {
+        if size + hit.source.text.len() > 4500 {
+            continue;
+        }
+        size += hit.source.text.len();
+        sources.insert(format!("S{}", sources.len() + 1), hit.source.clone());
+        if sources.len() >= 5 {
+            break;
+        }
+    }
+    ensure!(!sources.is_empty(), "No supporting search passages");
+    Ok(sources)
 }
 fn report(
     engine: &impl Inference,
@@ -876,7 +882,8 @@ pub fn analyse(
         let mut candidate = batch.clone();
         candidate.insert(id.clone(), sources[&id].clone());
         if !batch.is_empty()
-            && (candidate.len() > 3 || serde_json::to_string(&evidence(&candidate))?.len() > 4600)
+            && (candidate.len() > 3
+                || serde_json::to_string(&evidence_text(&candidate))?.len() > 4600)
         {
             batches.push(std::mem::take(&mut batch));
         }
@@ -901,7 +908,7 @@ pub fn analyse(
             engine,
             cache,
             &note_task,
-            &evidence(&selected),
+            &evidence_text(&selected),
             (&allowed, &selected),
             language,
             cancel,

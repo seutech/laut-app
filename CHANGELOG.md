@@ -16,6 +16,7 @@ Second public Rust desktop alpha.
 - Readable transcript workspace with search, chapters, full-text copy, waveform and pitch-preserving playback speed.
 - PDF text/OCR import, reviewed slide references, reversible video-insert exclusions and conference research export.
 - Literal and multilingual semantic library search plus local source-linked text analysis.
+- Optional OpenAI/Responses-compatible text analysis with an exact per-run transfer preview, operating-system credential-vault storage or session-only keys, and mandatory source/quote validation.
 - Search-result evidence labels and literal-term highlighting, conservative handling of weak similarities, duplicate collapsing and return navigation after opening a source.
 - Local event/topic collections that filter the library and provide one shared scope for search, questions and resumable full analysis, plus task-based model setup with grouped installs and readiness checks.
 - Microphone and meeting capture adapters for macOS and Windows; Linux microphone support.

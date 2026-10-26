@@ -21,6 +21,7 @@ serde_json = { version = "1", features = ["arbitrary_precision"] }
 uuid = { version = "1", features = ["v4"] }
 tempfile = "3"
 sha2 = "0.10"
+zeroize = "1"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
