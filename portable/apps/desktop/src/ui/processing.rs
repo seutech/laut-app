@@ -1,7 +1,7 @@
 use super::*;
 use laut_engine::{
     diarization::{self, DiarizationConfig},
-    downloads::{UrlImport, youtube_url},
+    downloads::{UrlImport, source_url},
     models,
     preferences::{Preferences, StateStore},
     queue::{BatchResult, Queue, QueueItem},
@@ -447,15 +447,16 @@ impl LautApp {
                         for (i,p) in self.processing.files.iter().enumerate(){ui.horizontal(|ui|{ui.label(p.file_name().unwrap_or_default().to_string_lossy()).on_hover_text(p.display().to_string());if ui.small_button("×").clicked(){remove=Some(i);}});}
                         if let Some(i)=remove{self.processing.files.remove(i);}
                         ui.separator();
-                        ui.label(t("YouTube-Links · ein Link pro Zeile", "YouTube links · one per line"));
-                        ui.add(egui::TextEdit::multiline(&mut self.processing.urls).desired_rows(2).desired_width(660.).hint_text("https://www.youtube.com/watch?v=…"));
-                        ui.small(t("Nur Audio. Abgeschlossene Livestreams werden unterstützt; Playlists und laufende Streams nicht. Link-Zeitmarken werden ignoriert.","Audio only. Finished live archives are supported; playlists and active streams are not. Link timestamps are ignored."));
+                        ui.label(t("Links · ein öffentlicher Link pro Zeile", "Links · one public link per line"));
+                        ui.add(egui::TextEdit::multiline(&mut self.processing.urls).desired_rows(2).desired_width(660.).hint_text(t("https://…/episode-oder-video","https://…/episode-or-video")));
+                        ui.small(t("Beispiele: YouTube- oder Vimeo-Video, kompatible Podcast-Episode oder Mediathek, direkte MP3/M4A/MP4-Adresse.","Examples: a YouTube or Vimeo video, compatible podcast episode or media-library page, or direct MP3/M4A/MP4 address."));
+                        ui.small(t("Nur Audio. Öffentliche HTTPS-Einzelquellen und abgeschlossene Livestreams werden unterstützt; Feeds, Playlists, laufende Streams und Links mit Anmeldung nicht.","Audio only. Public HTTPS individual sources and completed live archives are supported; feeds, playlists, active streams and login-only links are not."));
                         ui.horizontal(|ui| {
                             ui.checkbox(&mut self.processing.preview,t("Nur die ersten", "Only the first"));
                             ui.add_enabled(self.processing.preview, egui::DragValue::new(&mut self.processing.preview_minutes).range(1..=1440));
-                            ui.label(t("Minuten (YouTube)", "minutes (YouTube)"));
+                            ui.label(t("Minuten", "minutes"));
                         });
-                        let urls_valid = self.processing.urls.lines().filter(|s| !s.trim().is_empty()).try_for_each(|s| youtube_url(s).map(|_| ()));
+                        let urls_valid = self.processing.urls.lines().filter(|s| !s.trim().is_empty()).try_for_each(|s| source_url(s).map(|_| ()));
                         if let Err(e) = &urls_valid { ui.colored_label(ui.visuals().error_fg_color,e.to_string()); }
                         let has_urls = !self.processing.urls.trim().is_empty();
                         let download_ready = !has_urls || self.processing.download_paths.iter().all(|p| Path::new(p).is_file());
@@ -488,10 +489,10 @@ impl LautApp {
                         if setup_card(ui,en,"1 · Transkribieren","1 · Transcribe",t("Für Audio, Video und Aufnahmen. Small Q5 ist der empfohlene Kompromiss aus Qualität, Tempo und Speicherbedarf.","For audio, video and recordings. Small Q5 is the recommended balance of quality, speed and storage."),transcription_ready,&transcription_missing,transcription_bytes,transcription_programs.then_some(t("Whisper-Programm, FFmpeg oder FFprobe", "Whisper program, FFmpeg or FFprobe"))){install_plan=Some(transcription_ids);}
 
                         let platform=models::platform();
-                        let youtube_ids=vec![format!("yt-dlp-2026-10-21-{platform}"),format!("deno-v2-9-8-{platform}")];
-                        let (youtube_missing,youtube_bytes)=package_plan(&self.processing.installed,&youtube_ids);
-                        let youtube_ready=self.processing.download_paths.iter().all(|path|Path::new(path).is_file())&&Path::new(&self.job_fields[3]).is_file()&&Path::new(&self.job_fields[4]).is_file();
-                        if setup_card(ui,en,"2 · YouTube importieren","2 · Import YouTube",t("Fertige Videos und abgeschlossene Livestreams landen direkt in der Warteschlange. Es wird nur die Audiospur gespeichert.","Finished videos and completed livestreams go straight to the queue. Only the audio track is stored."),youtube_ready,&youtube_missing,youtube_bytes,(!Path::new(&self.job_fields[3]).is_file()||!Path::new(&self.job_fields[4]).is_file()).then_some("FFmpeg / FFprobe")){install_plan=Some(youtube_ids);}
+                        let link_ids=vec![format!("yt-dlp-2026-10-21-{platform}"),format!("deno-v2-9-8-{platform}")];
+                        let (link_missing,link_bytes)=package_plan(&self.processing.installed,&link_ids);
+                        let link_ready=self.processing.download_paths.iter().all(|path|Path::new(path).is_file())&&Path::new(&self.job_fields[3]).is_file()&&Path::new(&self.job_fields[4]).is_file();
+                        if setup_card(ui,en,"2 · Links importieren","2 · Import links",t("Öffentliche Videos, einzelne Podcast-Episoden, Mediatheken und direkte Audiodateien landen in der Warteschlange. Gespeichert wird nur die Audiospur.","Public videos, individual podcast episodes, media-library pages and direct audio files go to the queue. Only the audio track is stored."),link_ready,&link_missing,link_bytes,(!Path::new(&self.job_fields[3]).is_file()||!Path::new(&self.job_fields[4]).is_file()).then_some("FFmpeg / FFprobe")){install_plan=Some(link_ids);}
 
                         let diarizer_id=format!("sherpa-1-13-8-{platform}");
                         let diarizer_packaged=models::package(&diarizer_id).is_ok();

@@ -10,8 +10,10 @@ fn main() {
     } else if has("--skip-download") {
         let url = args.last().unwrap();
         if url.ends_with("private0000") { eprintln!("ERROR: Private video"); std::process::exit(1); }
-        let id = url.split("v=").last().unwrap();
-        println!("{{\"id\":\"{id}\",\"title\":\"Talk: Merz / Huang?\",\"duration\":30,\"vcodec\":\"none\",\"acodec\":\"aac\",\"upload_date\":\"20261022\",\"chapters\":[{{\"start_time\":0,\"title\":\"Opening\"}}]}}");
+        let id = url.split("v=").nth(1).unwrap_or_else(|| url.rsplit('/').next().unwrap()).split('?').next().unwrap();
+        let duration = if url.contains("podcast.example") { "" } else { "\"duration\":30," };
+        let extractor = if url.contains("vimeo.com") { "Vimeo" } else if url.contains("podcast.example") { "Generic" } else { "Youtube" };
+        println!("{{\"id\":\"{id}\",\"title\":\"Talk: Merz / Huang?\",{duration}\"vcodec\":\"none\",\"acodec\":\"aac\",\"upload_date\":\"20261022\",\"extractor_key\":\"{extractor}\",\"chapters\":[{{\"start_time\":0,\"title\":\"Opening\"}}]}}");
     } else if has("--print-to-file") {
         let out = PathBuf::from(value("--output").replace("%(ext)s","m4a"));
         if args.last().unwrap().ends_with("cancel00000") {

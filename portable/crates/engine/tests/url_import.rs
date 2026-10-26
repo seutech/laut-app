@@ -1,6 +1,6 @@
 use laut_engine::{
     Session,
-    downloads::{UrlImport, youtube_url},
+    downloads::{UrlImport, source_url},
     jobs::JobConfig,
     library::Library,
     queue::Queue,
@@ -64,8 +64,16 @@ fn source(id: &str) -> UrlImport {
         first_seconds: Some(30.),
     }
 }
+fn direct_source() -> UrlImport {
+    UrlImport {
+        url: "https://cdn.podcast.example/episodes/ai-day.mp3".into(),
+        yt_dlp: worker(),
+        deno: worker(),
+        first_seconds: None,
+    }
+}
 #[test]
-fn urls_normalize_without_tracking_and_reject_non_video_inputs() {
+fn links_normalize_and_reject_unsafe_or_multi_item_inputs() {
     for url in [
         "https://youtu.be/-DmX1TkPHnM?si=test",
         "https://www.youtube.com/live/-DmX1TkPHnM",
@@ -73,21 +81,36 @@ fn urls_normalize_without_tracking_and_reject_non_video_inputs() {
         "https://youtube.com/watch?v=-DmX1TkPHnM&list=ignored",
     ] {
         assert_eq!(
-            youtube_url(url).unwrap(),
+            source_url(url).unwrap(),
             "https://www.youtube.com/watch?v=-DmX1TkPHnM"
         );
     }
+    assert_eq!(
+        source_url("https://vimeo.com/76979871?share=copy#t=30").unwrap(),
+        "https://vimeo.com/76979871?share=copy"
+    );
+    assert_eq!(
+        source_url("https://cdn.podcast.example/episodes/ai%20day.mp3?download=1#listen").unwrap(),
+        "https://cdn.podcast.example/episodes/ai%20day.mp3?download=1"
+    );
     for url in [
         "file:///etc/passwd",
-        "https://youtube.com.evil.example/watch?v=-DmX1TkPHnM",
+        "http://vimeo.com/76979871",
         "https://user:password@youtube.com/watch?v=-DmX1TkPHnM",
+        "https://example.com:8443/audio.mp3",
+        "https://localhost/audio.mp3",
+        "https://podcast.local/episode.mp3",
+        "https://127.0.0.1/audio.mp3",
+        "https://[::1]/audio.mp3",
+        "https://192.168.1.5/audio.mp3",
+        "https://169.254.169.254/latest/meta-data/",
         "https://youtube.com/playlist?list=abc",
         "https://youtu.be/../../etc/passwd",
         "https://youtube.com/watch?v=-DmX1TkPHnM&v=12345678901",
         "https://youtu.be/-DmX1TkPHnM/extra",
         "https://youtu.be/$(touch x)",
     ] {
-        assert!(youtube_url(url).is_err(), "{url}");
+        assert!(source_url(url).is_err(), "{url}");
     }
 }
 #[test]
@@ -133,6 +156,26 @@ fn failed_url_does_not_block_batch_and_library_survives_cache_cleanup() {
     assert!(audio.is_file());
     assert_eq!(queue.run(&good.id, &false.into(), |_, _| {}).unwrap(), path);
     assert!(queue.cleanup(&bad.id).is_err());
+}
+#[test]
+fn direct_podcast_audio_gets_its_duration_from_the_download() {
+    let temp = tempfile::tempdir().unwrap();
+    let library = Library::create(&temp.path().join("library")).unwrap();
+    let queue = Queue::new(temp.path().join("jobs"));
+    let item = queue
+        .enqueue_url(config(), library.root, None, direct_source())
+        .unwrap();
+    let path = queue.run(&item.id, &false.into(), |_, _| {}).unwrap();
+    let session = Session::open(&path).unwrap();
+    assert_eq!(
+        session.document.raw()["source"]["provider"],
+        "cdn.podcast.example"
+    );
+    assert_eq!(session.document.raw()["source"]["originalDuration"], 30.);
+    assert_eq!(
+        session.document.raw()["source"]["url"],
+        "https://cdn.podcast.example/episodes/ai-day.mp3"
+    );
 }
 #[test]
 fn resume_uses_verified_download_without_yt_dlp_and_rejects_changed_audio() {

@@ -172,7 +172,7 @@ enum Action {
         #[arg(long)]
         diarization: Option<PathBuf>,
     },
-    /// Queue a YouTube audio URL; config contains the same local ASR paths as queue-add.
+    /// Queue a public media link; config contains the same local ASR paths as queue-add.
     QueueAddUrl {
         root: PathBuf,
         library: PathBuf,

@@ -10,7 +10,7 @@
 
 **Local-first transcription and conference research for macOS, Windows and Linux.**
 
-Laut imports recordings or public YouTube videos, transcribes speech locally, separates speakers, links useful PDF slides and turns long events into a searchable research archive. Audio, transcripts, corrections, notes and model output remain on your computer. No account, cloud transcription, analytics or API key is required.
+Laut imports recordings or public media links, transcribes speech locally, separates speakers, links useful PDF slides and turns long events into a searchable research archive. Links can point to an individual YouTube/Vimeo video, compatible podcast episode or media-library page, or a direct media file. Audio, transcripts, corrections, notes and model output remain on your computer. No account, cloud transcription, analytics or API key is required.
 
 The current application is written in **Rust** with egui. It is a public alpha: the Mac build is used for real transcript work, while Windows and Linux packages are built and checked in CI but still need wider hardware testing.
 
@@ -20,7 +20,7 @@ Download the newest package from [GitHub Releases](https://github.com/seutech/la
 
 | Platform | Package | Current validation |
 | --- | --- | --- |
-| macOS 13+, Apple Silicon | `Laut-macOS-ARM64.zip` | Main tested desktop build. File/YouTube transcription, editing, playback and local research exercised. |
+| macOS 13+, Apple Silicon | `Laut-macOS-ARM64.zip` | Main tested desktop build. File/link transcription, editing, playback and local research exercised. |
 | Windows 10/11 x64 | `Laut-Windows-X64.zip` | CPU build and automated tests; real microphones, meeting loopback and broad device coverage still need external testing. |
 | Linux x64 | `Laut-Linux-X64.tar.gz` | CPU build and automated tests; microphone/device coverage is limited and system-audio capture is not implemented. |
 
@@ -38,17 +38,17 @@ Laut needs local **FFmpeg** and **FFprobe** for imports, waveform generation, re
 
 1. Open **Settings** and choose or create a library folder.
 2. Open **Models**. The guided setup recommends **Whisper Small Q5** and shows a green **Ready** status only when its model and required local programs are available. Downloads are explicit, checksum-verified and resumable.
-3. Add only the optional workflows you need: YouTube import, speaker separation, semantic search or local AI analysis. Each card installs its required model packages together; existing FFmpeg, FFprobe and bundled workers are detected separately.
-4. Import an audio/video file, or add a public YouTube link under **Sources & jobs**.
+3. Add only the optional workflows you need: link import, speaker separation, semantic search or local AI analysis. Each card installs its required model packages together; existing FFmpeg, FFprobe and bundled workers are detected separately.
+4. Import an audio/video file, or add one public HTTPS link under **Sources & jobs**. Examples include a YouTube/Vimeo video, one podcast episode or a direct MP3/M4A/MP4 address.
 5. Start the queued job. Completed five-minute chunks are checkpointed so long transcriptions can resume.
 6. Review the transcript and speaker assignments before publication. Speaker labels and contextual name suggestions are evidence for editing, not biometric identity claims.
 
-YouTube support uses pinned local yt-dlp and Deno packages installed from the model manager. Laut imports audio only. Use it only for material you are permitted to download and follow the source platform's terms and applicable law.
+Link support uses pinned local yt-dlp and Deno packages installed from the model manager. Laut imports audio only. Provider support follows the installed yt-dlp version and public availability. Use it only for material you are permitted to download and follow the source platform's terms and applicable law.
 
 ## What Laut can do
 
 - Local Whisper.cpp transcription on CPU with word timing where the model evidence supports it.
-- Persistent multi-file and YouTube job queue with cancellation, checkpoints and verified cache cleanup.
+- Persistent multi-file and public-link job queue with cancellation, checkpoints and verified cache cleanup.
 - Local CPU speaker diarization through sherpa-onnx, including reviewable voice samples and protected manual names.
 - A readable transcript workspace with paragraphs, speaker/time markers, chapters, search, full-text copy, waveform, zoom and pitch-preserving 0.5×–2× playback, plus a compact player that stays available across the other app sections.
 - Transcript correction, segment splitting/merging, speaker reassignment and saved undo/redo history.
@@ -81,7 +81,7 @@ Recordings and PDFs can be much larger than transcripts. Temporary download and 
 ## Known limits in the first public alpha
 
 - Windows and Linux packages have not yet had the same real-device coverage as macOS.
-- macOS meeting system audio still needs a successful permission/hardware retest; ordinary file and YouTube work does not depend on it.
+- macOS meeting system audio still needs a successful permission/hardware retest; ordinary file and link imports do not depend on it.
 - Multi-hour performance on Windows/Linux, abrupt power-loss behavior and disk-full behavior still need broader real-world measurement.
 - Linux system-audio recording, acoustic echo cancellation, video-frame slide detection and automatic semantic chapter generation are not implemented.
 - Name spelling, speaker clusters, summaries, slide matches and OCR require editorial review.

@@ -766,10 +766,7 @@ impl LautApp {
                 self.choose_media(ctx);
             }
             if ui
-                .add_enabled(
-                    !self.busy,
-                    egui::Button::new(self.l("YouTube-Link", "YouTube link")),
-                )
+                .add_enabled(!self.busy, egui::Button::new(self.l("Link", "Link")))
                 .clicked()
             {
                 self.show_section(Section::Sources, ctx);
@@ -989,10 +986,13 @@ impl LautApp {
         let mut source_metadata = false;
         if let Some(source) = self.session.as_ref().map(|s| &s.document.raw()["source"])
             && let Some(url) = source["url"].as_str()
-            && let Ok(url) = laut_engine::downloads::youtube_url(url)
+            && let Ok(url) = laut_engine::downloads::source_url(url)
         {
             ui.horizontal_wrapped(|ui| {
-                ui.hyperlink_to(self.l("YouTube-Quelle", "YouTube source"), url);
+                let provider = source["provider"]
+                    .as_str()
+                    .unwrap_or(self.l("Online", "Online"));
+                ui.hyperlink_to(format!("{}: {provider}", self.l("Quelle", "Source")), url);
                 if let Some(publisher) = source["publisher"].as_str() {
                     ui.small(publisher);
                 }

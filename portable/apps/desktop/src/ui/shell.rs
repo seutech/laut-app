@@ -438,7 +438,7 @@ impl LautApp {
             if ui.button(self.l("Entwürfe wiederherstellen …","Recover drafts …")).clicked() { self.reload_drafts(); self.daily.recovery_open=true; }
             ui.add_space(20.);ui.separator();ui.add_space(12.);
             ui.strong(self.l("Verarbeitung","Processing"));
-            ui.label(self.l("Sprachmodelle und Programme richtest du unter Modelle ein. Dateien und YouTube-Links gehören zu Quellen & Aufträge.","Set up speech models and programs under Models. Add files and YouTube links under Sources & jobs."));
+            ui.label(self.l("Sprachmodelle und Programme richtest du unter Modelle ein. Dateien und Links gehören zu Quellen & Aufträge.","Set up speech models and programs under Models. Add files and links under Sources & jobs."));
             if ui.button(self.l("Modelle öffnen","Open models")).clicked() { self.show_section(Section::Models,ctx); }
         });
     }

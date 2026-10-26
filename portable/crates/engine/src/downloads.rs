@@ -1,4 +1,4 @@
-//! Explicit YouTube audio download. No shell, browser cookies, playlists or implicit updates.
+//! Explicit public-link audio download. No shell, browser cookies, playlists or implicit updates.
 use crate::{
     jobs::{atomic_json, run_capture},
     media::digest,
@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     fs,
+    net::IpAddr,
     path::{Path, PathBuf},
     process::Command,
     sync::atomic::{AtomicBool, Ordering},
@@ -27,7 +28,7 @@ pub struct UrlImport {
 }
 impl UrlImport {
     pub fn normalize(&mut self) -> Result<()> {
-        self.url = youtube_url(&self.url)?;
+        self.url = source_url(&self.url)?;
         ensure!(
             self.first_seconds
                 .is_none_or(|n| n.is_finite() && n > 0. && n <= MAX_SECONDS),
@@ -42,19 +43,52 @@ impl UrlImport {
         Ok(())
     }
 }
-/// Strip tracking, playlist and time parameters; never hand arbitrary URLs to an extractor.
-pub fn youtube_url(text: &str) -> Result<String> {
-    let u = url::Url::parse(text.trim()).context("YouTube-Link ungültig / Invalid YouTube link")?;
+/// Accept one public HTTPS media page. YouTube links are reduced to a stable video URL;
+/// other providers keep query parameters because podcast/CDN links may require them.
+pub fn source_url(text: &str) -> Result<String> {
+    let mut u = url::Url::parse(text.trim()).context("Link ungültig / Invalid link")?;
     ensure!(
         u.scheme() == "https"
             && u.username().is_empty()
             && u.password().is_none()
             && u.port().is_none_or(|p| p == 443),
-        "Use an HTTPS YouTube link without credentials / HTTPS-YouTube-Link ohne Zugangsdaten verwenden"
+        "Öffentlichen HTTPS-Link ohne Zugangsdaten verwenden / Use a public HTTPS link without credentials"
     );
-    let host = u.host_str().unwrap_or_default();
+    ensure!(text.trim().len() <= 8192, "Link too long / Link zu lang");
+    let host = u
+        .host_str()
+        .context("Link host missing")?
+        .to_ascii_lowercase();
+    ensure!(
+        !matches!(
+            host.as_str(),
+            "localhost" | "localhost.localdomain" | "metadata.google.internal"
+        ) && ![".localhost", ".local", ".internal", ".home", ".lan"]
+            .iter()
+            .any(|suffix| host.ends_with(suffix)),
+        "Lokale Netzwerkadressen werden nicht als Medienquelle geöffnet / Local network addresses are not opened as media sources"
+    );
+    let ip_text = host
+        .strip_prefix('[')
+        .and_then(|text| text.strip_suffix(']'))
+        .unwrap_or(&host);
+    if let Ok(ip) = ip_text.parse::<IpAddr>() {
+        ensure!(public_ip(ip), "Public Internet address required");
+    }
+    u.set_fragment(None);
+    if !matches!(
+        host.as_str(),
+        "youtu.be"
+            | "www.youtu.be"
+            | "youtube.com"
+            | "www.youtube.com"
+            | "m.youtube.com"
+            | "music.youtube.com"
+    ) {
+        return Ok(u.to_string());
+    }
     let parts: Vec<_> = u.path_segments().into_iter().flatten().collect();
-    let id = match host {
+    let id = match host.as_str() {
         "youtu.be" | "www.youtu.be" if parts.len() == 1 => parts[0].to_owned(),
         "youtube.com" | "www.youtube.com" | "m.youtube.com" | "music.youtube.com" => {
             if u.path() == "/watch" {
@@ -72,9 +106,7 @@ pub fn youtube_url(text: &str) -> Result<String> {
                 parts[1].to_owned()
             }
         }
-        _ => anyhow::bail!(
-            "Only YouTube video links are supported / Bitte einen YouTube-Videolink verwenden"
-        ),
+        _ => anyhow::bail!("Use an individual YouTube video link"),
     };
     ensure!(
         id.len() == 11
@@ -84,6 +116,60 @@ pub fn youtube_url(text: &str) -> Result<String> {
         "Invalid YouTube video ID / Ungültige YouTube-Video-ID"
     );
     Ok(format!("https://www.youtube.com/watch?v={id}"))
+}
+
+fn public_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            let [a, b, c, _] = ip.octets();
+            !(a == 0
+                || a == 10
+                || a == 127
+                || (a == 100 && (64..=127).contains(&b))
+                || (a == 169 && b == 254)
+                || (a == 172 && (16..=31).contains(&b))
+                || (a == 192 && b == 0 && c == 0)
+                || (a == 192 && b == 0 && c == 2)
+                || (a == 192 && b == 168)
+                || (a == 198 && (b == 18 || b == 19))
+                || (a == 198 && b == 51 && c == 100)
+                || (a == 203 && b == 0 && c == 113)
+                || a >= 224)
+        }
+        IpAddr::V6(ip) => {
+            let segments = ip.segments();
+            !ip.is_unspecified()
+                && !ip.is_loopback()
+                && !ip.is_multicast()
+                && segments[0] & 0xfe00 != 0xfc00
+                && segments[0] & 0xffc0 != 0xfe80
+                && !(segments[0] == 0x2001 && segments[1] == 0x0db8)
+                && ip
+                    .to_ipv4_mapped()
+                    .is_none_or(|mapped| public_ip(mapped.into()))
+        }
+    }
+}
+
+/// Vimeo's public page endpoint may demand a logged-in web client even when its
+/// matching embedded player remains public. Keep the user's source URL in the
+/// project, but use the public player endpoint for extraction when possible.
+fn extractor_url(source: &str) -> String {
+    let Ok(url) = url::Url::parse(source) else {
+        return source.to_owned();
+    };
+    let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+    if matches!(host.as_str(), "vimeo.com" | "www.vimeo.com")
+        && let Some(id) = url
+            .path_segments()
+            .into_iter()
+            .flatten()
+            .next_back()
+            .filter(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+    {
+        return format!("https://player.vimeo.com/video/{id}");
+    }
+    source.to_owned()
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Download {
@@ -137,25 +223,24 @@ fn metadata(info: &Value, config: &UrlImport) -> Result<Value> {
             ),
         "Liveübertragung noch nicht vollständig veröffentlicht. Später erneut starten / Live archive not ready; retry later"
     );
-    let duration = info["duration"]
-        .as_f64()
-        .context("Video duration unavailable")?;
+    let duration = info["duration"].as_f64();
     ensure!(
-        duration.is_finite() && duration > 0. && duration <= MAX_SECONDS,
-        "Videos bis 24 Stunden werden unterstützt / Videos up to 24 hours are supported"
+        duration.is_none_or(|duration| {
+            duration.is_finite() && duration > 0. && duration <= MAX_SECONDS
+        }),
+        "Einzelquellen bis 24 Stunden werden unterstützt / Individual sources up to 24 hours are supported"
     );
     ensure!(
-        info["vcodec"] == "none" && info["acodec"].as_str().is_some_and(|c| c != "none"),
+        info["vcodec"] == "none",
         "Separate audio stream unavailable / Keine separate Audiospur verfügbar"
     );
-    ensure!(
-        config
-            .url
-            .ends_with(info["id"].as_str().context("Missing video ID")?),
-        "Source identity changed"
-    );
-    let end = config.first_seconds.unwrap_or(duration).min(duration);
-    let title = info["title"].as_str().unwrap_or("YouTube");
+    let end = config
+        .first_seconds
+        .map(|requested| duration.map_or(requested, |duration| requested.min(duration)))
+        .or(duration)
+        .unwrap_or(MAX_SECONDS);
+    let provider = provider(info, &config.url);
+    let title = info["title"].as_str().unwrap_or(&provider);
     ensure!(title.len() <= 8192, "Source title too long");
     let mut chapters = vec![];
     for ch in info["chapters"].as_array().into_iter().flatten().take(2000) {
@@ -165,19 +250,45 @@ fn metadata(info: &Value, config: &UrlImport) -> Result<Value> {
             && start < end
             && title.len() <= 4096
         {
-            chapters.push(json!({"id":uuid::Uuid::new_v4().to_string().to_uppercase(),"start":start,"title":title,"origin":"YouTube"}));
+            chapters.push(json!({"id":uuid::Uuid::new_v4().to_string().to_uppercase(),"start":start,"title":title,"origin":provider.clone()}));
         }
     }
-    let date = info["upload_date"]
+    let date = info["release_date"]
         .as_str()
+        .or_else(|| info["upload_date"].as_str())
         .filter(|d| d.len() == 8 && d.bytes().all(|c| c.is_ascii_digit()))
         .map(|d| format!("{}-{}-{}", &d[..4], &d[4..6], &d[6..]));
-    let mut source = json!({"url":config.url,"provider":"YouTube","externalID":info["id"],"originalTitle":title,"publisher":info["channel"].as_str().or_else(||info["uploader"].as_str()),"publishedOn":date,"language":info["language"],"originalDuration":duration,"chapters":chapters,"importedAt":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs_f64()-978307200.});
+    let publisher = info["channel"]
+        .as_str()
+        .or_else(|| info["uploader"].as_str())
+        .or_else(|| info["creator"].as_str())
+        .or_else(|| info["series"].as_str());
+    let mut source = json!({"url":config.url,"provider":provider,"externalID":info["id"],"originalTitle":title,"publisher":publisher,"publishedOn":date,"language":info["language"],"originalDuration":duration,"chapters":chapters,"importedAt":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs_f64()-978307200.});
     if config.first_seconds.is_some() {
         source["clipStart"] = json!(0.);
         source["clipEnd"] = json!(end);
     }
     Ok(source)
+}
+
+fn provider(info: &Value, source: &str) -> String {
+    let host = url::Url::parse(source)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .unwrap_or_else(|| "Online".into())
+        .to_ascii_lowercase();
+    if host == "youtu.be" || host.ends_with(".youtube.com") || host == "youtube.com" {
+        return "YouTube".into();
+    }
+    if host == "vimeo.com" || host.ends_with(".vimeo.com") {
+        return "Vimeo".into();
+    }
+    info["extractor_key"]
+        .as_str()
+        .or_else(|| info["extractor"].as_str())
+        .filter(|name| !name.eq_ignore_ascii_case("generic") && name.len() <= 128)
+        .map(str::to_owned)
+        .unwrap_or_else(|| host.strip_prefix("www.").unwrap_or(&host).to_owned())
 }
 fn media_file(folder: &Path, filename: &str) -> Result<PathBuf> {
     ensure!(
@@ -209,7 +320,7 @@ pub fn download(
         "Download paused / Download pausiert"
     );
     ensure!(
-        youtube_url(&config.url)? == config.url,
+        source_url(&config.url)? == config.url,
         "URL is not normalized"
     );
     fs::create_dir_all(folder)?;
@@ -255,14 +366,14 @@ pub fn download(
         fs2::available_space(folder)? > 1024 * 1024 * 1024,
         "At least 1 GiB free space required / Mindestens 1 GiB freier Speicher nötig"
     );
-    progress(0., "YouTube-Quelle prüfen / Checking YouTube source");
+    progress(0., "Link prüfen / Checking link");
     let probe_path = folder.join("source.json");
     let mut probe = base(config, ffmpeg);
     // Print a small public metadata subset, never persist signed media URLs or cookies.
-    probe.args(["--skip-download", "--print", "%(.{id,title,channel,uploader,upload_date,language,duration,live_status,is_live,_type,vcodec,acodec,chapters})j", "--"]).arg(&config.url);
+    probe.args(["--skip-download", "--print", "%(.{id,title,channel,uploader,creator,series,upload_date,release_date,language,duration,live_status,is_live,_type,vcodec,acodec,chapters,extractor,extractor_key})j", "--"]).arg(extractor_url(&config.url));
     run_capture(probe, &folder.join("probe.log"), Some(&probe_path), cancel, |_| {})
-        .context("YouTube-Zugriff fehlgeschlagen (privat, entfernt oder Anmeldung erforderlich). Öffentlichen Link und yt-dlp-Version prüfen / YouTube access failed; check public availability and yt-dlp version")?;
-    let source = metadata(
+        .context("Link konnte nicht als öffentliche Einzelquelle gelesen werden. Verfügbarkeit und yt-dlp-Version prüfen / Link could not be read as a public individual source; check availability and yt-dlp version")?;
+    let mut source = metadata(
         &serde_json::from_slice(&read_json_bytes(&probe_path)?)?,
         config,
     )?;
@@ -290,7 +401,7 @@ pub fn download(
         cmd.arg("--download-sections")
             .arg(format!("*0-{}", source["clipEnd"].as_f64().unwrap()));
     }
-    cmd.arg("--").arg(&config.url);
+    cmd.arg("--").arg(extractor_url(&config.url));
     run_capture(cmd, &folder.join("download.log"), None, cancel, |p| {
         progress(
             0.05 + p * 0.9,
@@ -346,15 +457,25 @@ pub fn download(
         .as_str()
         .context("Audio duration missing")?
         .parse()?;
-    let expected = source["clipEnd"]
-        .as_f64()
-        .unwrap_or(source["originalDuration"].as_f64().unwrap());
     ensure!(
-        duration.is_finite()
-            && duration > 0.
-            && (duration - expected).abs() <= 5_f64.max(expected * 0.01),
-        "Download is incomplete or has unexpected duration / Audiodownload unvollständig"
+        duration.is_finite() && duration > 0. && duration <= MAX_SECONDS,
+        "Downloaded audio has an invalid duration / Heruntergeladenes Audio hat eine ungültige Dauer"
     );
+    if let Some(expected) = source["originalDuration"].as_f64() {
+        let target = source["clipEnd"].as_f64().unwrap_or(expected);
+        ensure!(
+            (duration - target).abs() <= 5_f64.max(target * 0.01),
+            "Download is incomplete or has unexpected duration / Audiodownload unvollständig"
+        );
+    } else if source["clipEnd"].is_number() {
+        ensure!(
+            duration <= source["clipEnd"].as_f64().unwrap() + 5.,
+            "Downloaded excerpt exceeds its requested duration / Ausschnitt ist länger als angefordert"
+        );
+        source["clipEnd"] = json!(duration);
+    } else {
+        source["originalDuration"] = json!(duration);
+    }
     let result = Download {
         version: 1,
         filename,
@@ -393,5 +514,63 @@ mod tests {
         let mut bad = config;
         bad.first_seconds = Some(f64::INFINITY);
         assert!(bad.normalize().is_err());
+    }
+
+    #[test]
+    fn metadata_uses_the_actual_provider_and_podcast_fields() {
+        let config = UrlImport {
+            url: "https://vimeo.com/76979871".into(),
+            yt_dlp: "yt-dlp".into(),
+            deno: "deno".into(),
+            first_seconds: None,
+        };
+        let info = json!({
+            "id":"76979871",
+            "title":"The New Vimeo Player",
+            "duration":62.,
+            "vcodec":"none",
+            "acodec":"aac",
+            "release_date":"20261023",
+            "creator":"Vimeo Staff",
+            "extractor_key":"Vimeo",
+            "chapters":[{"start_time":0.,"title":"Opening"}]
+        });
+        let result = metadata(&info, &config).unwrap();
+        assert_eq!(result["provider"], "Vimeo");
+        assert_eq!(result["publisher"], "Vimeo Staff");
+        assert_eq!(result["publishedOn"], "2026-10-23");
+        assert_eq!(result["chapters"][0]["origin"], "Vimeo");
+
+        let generic = UrlImport {
+            url: "https://cdn.podcast.example/episode.mp3".into(),
+            ..config
+        };
+        let mut generic_info = info;
+        generic_info["extractor_key"] = json!("Generic");
+        generic_info.as_object_mut().unwrap().remove("duration");
+        assert_eq!(
+            metadata(&generic_info, &generic).unwrap()["originalDuration"],
+            Value::Null
+        );
+        assert_eq!(
+            metadata(&generic_info, &generic).unwrap()["provider"],
+            "cdn.podcast.example"
+        );
+    }
+
+    #[test]
+    fn vimeo_pages_use_the_public_player_without_changing_the_saved_source() {
+        assert_eq!(
+            extractor_url("https://vimeo.com/863362136?share=copy"),
+            "https://player.vimeo.com/video/863362136"
+        );
+        assert_eq!(
+            extractor_url("https://vimeo.com/channels/staffpicks/863362136"),
+            "https://player.vimeo.com/video/863362136"
+        );
+        assert_eq!(
+            extractor_url("https://player.vimeo.com/video/863362136"),
+            "https://player.vimeo.com/video/863362136"
+        );
     }
 }
