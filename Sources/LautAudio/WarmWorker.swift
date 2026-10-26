@@ -1,3 +1,4 @@
+import LautCore
 import Foundation
 
 /// A single serial JSON-lines worker with no listening port and no network access.
@@ -51,17 +52,17 @@ public final class WarmWorker: @unchecked Sendable {
                                 self.process = process; self.input = stdin.fileHandleForWriting; self.output = stdout.fileHandleForReading; self.log = log; self.executablePath = python.path
                             }
                         }
-                        guard let input = self.input, let output = self.output else { throw LocalEngineError("Modellprozess konnte nicht gestartet werden.") }
+                        guard let input = self.input, let output = self.output else { throw LocalEngineError(L("Modellprozess konnte nicht gestartet werden.")) }
                         try input.write(contentsOf: data)
                         var response = Data()
                         while !response.contains(10) {
                             let chunk = output.availableData
                             guard !chunk.isEmpty else {
                                 let detail = self.directory.flatMap { try? String(contentsOf: $0.appendingPathComponent("stderr"), encoding: .utf8) } ?? ""
-                                throw LocalEngineError("Lokaler Modellprozess beendet. " + String(detail.suffix(3000)))
+                                throw LocalEngineError(L("Lokaler Modellprozess beendet. ") + String(detail.suffix(3000)))
                             }
                             response.append(chunk)
-                            guard response.count < 128 * 1024 * 1024 else { throw LocalEngineError("Modellausgabe überschreitet 128 MB.") }
+                            guard response.count < 128 * 1024 * 1024 else { throw LocalEngineError(L("Modellausgabe überschreitet 128 MB.")) }
                         }
                         if let error = (try JSONSerialization.jsonObject(with: response) as? [String: Any])?["error"] as? String { throw LocalEngineError(error) }
                         continuation.resume(returning: response)

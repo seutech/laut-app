@@ -79,10 +79,11 @@ enum TextInsertion {
 
 extension AppStore {
     func toggleRecording(kind: DocumentKind) {
+        guard !systemSleeping else { return }
         if isRecording { stopRecording(); return }
-        guard !busy else { error = "Bitte den laufenden Vorgang zuerst beenden."; return }
+        guard !busy else { error = L("Bitte den laufenden Vorgang zuerst beenden."); return }
         if kind == .dictation, !TextInsertion.permitted() {
-            error = "Aktiviere Laut unter Systemeinstellungen → Datenschutz & Sicherheit → Bedienungshilfen. Danach kannst du Text direkt einfügen."; return
+            error = L("Aktiviere Laut unter Systemeinstellungen → Datenschutz & Sicherheit → Bedienungshilfen. Danach kannst du Text direkt einfügen."); return
         }
         let target = NSWorkspace.shared.frontmostApplication
         let anchor = target.flatMap { TextInsertion.anchor($0) }
@@ -90,13 +91,13 @@ extension AppStore {
         Task {
             defer { busy = false }
             let allowed = await AVCaptureDevice.requestAccess(for: .audio)
-            guard allowed else { error = "Mikrofonzugriff fehlt. Er lässt sich in den Systemeinstellungen erlauben."; return }
+            guard allowed else { error = L("Mikrofonzugriff fehlt. Er lässt sich in den Systemeinstellungen erlauben."); return }
             do {
                 let temp = library.root.appendingPathComponent("capture-\(UUID().uuidString).m4a")
                 let recorder = try AVAudioRecorder(url: temp, settings: [AVFormatIDKey: kAudioFormatMPEG4AAC, AVSampleRateKey: 48000, AVNumberOfChannelsKey: 1, AVEncoderBitRateKey: 128000])
-                guard recorder.record() else { throw LocalEngineError("Mikrofonaufnahme konnte nicht gestartet werden.") }
+                guard recorder.record() else { throw LocalEngineError(L("Mikrofonaufnahme konnte nicht gestartet werden.")) }
                 self.recorder = recorder; captureURL = temp; capturedKind = kind; captureTarget = target; captureAnchor = anchor
-                isRecording = true; status = kind == .dictation ? "Diktat läuft · ⌃⌥Leertaste beendet die Aufnahme" : "Mikrofonaufnahme läuft"
+                isRecording = true; status = kind == .dictation ? L("Diktat läuft · ⌃⌥Leertaste beendet die Aufnahme") : L("Mikrofonaufnahme läuft")
             } catch { self.error = error.localizedDescription }
         }
     }
@@ -106,41 +107,41 @@ extension AppStore {
         guard let url = captureURL else { return }; captureURL = nil
         do {
             var item = try library.importFile(url)
-            item.kind = capturedKind; item.title = (capturedKind == .dictation ? "Diktat · " : "Aufnahme · ") + Date().formatted(date: .abbreviated, time: .shortened)
+            item.kind = capturedKind; item.title = (capturedKind == .dictation ? L("Diktat · ") : L("Aufnahme · ")) + Date().formatted(Date.FormatStyle(date: .abbreviated, time: .shortened).locale(LautLocalization.locale))
             try library.save(item); recordings.insert(item, at: 0); selected = item.id; section = "library"
             try FileManager.default.removeItem(at: url)
             transcribe(item.id, pasteTo: capturedKind == .dictation ? captureTarget : nil, anchor: captureAnchor)
-        } catch { self.error = "Aufnahme bleibt unter \(url.path) erhalten. \(error.localizedDescription)" }
+        } catch { self.error = L("Aufnahme bleibt unter \(url.path) erhalten. \(error.localizedDescription)") }
     }
     func startMeeting() {
-        guard !busy, !isRecording else { return }
-        busy = true; status = "Meetingaufnahme vorbereiten …"
+        guard !busy, !isRecording, !systemSleeping else { return }
+        busy = true; status = L("Meetingaufnahme vorbereiten …")
         Task {
             defer { busy = false }
-            guard await AVCaptureDevice.requestAccess(for: .audio) else { error = "Bitte Mikrofonzugriff in den Systemeinstellungen erlauben."; return }
+            guard await AVCaptureDevice.requestAccess(for: .audio) else { error = L("Bitte Mikrofonzugriff in den Systemeinstellungen erlauben."); return }
             let folder = library.root.appendingPathComponent("meeting-\(UUID().uuidString)")
             do {
                 let capture = MeetingCapture(directory: folder)
                 try await capture.start()
                 meeting = capture; meetingDirectory = folder; isRecording = true
-                status = "Meetingaufnahme läuft · Mikrofon + Systemaudio"
-            } catch { self.error = "Meetingaufnahme nicht gestartet: \(error.localizedDescription)"; status = "Aufnahme nicht gestartet" }
+                status = L("Meetingaufnahme läuft · Mikrofon + Systemaudio")
+            } catch { self.error = L("Meetingaufnahme nicht gestartet: \(error.localizedDescription)"); status = L("Aufnahme nicht gestartet") }
         }
     }
     func stopMeeting() {
         guard let capture = meeting else { return }
-        meeting = nil; isRecording = false; busy = true; status = "Meetingspuren lokal verbinden …"
+        meeting = nil; isRecording = false; busy = true; status = L("Meetingspuren lokal verbinden …")
         Task {
             do {
                 let audio = try await capture.stop()
                 var item = try library.importFile(audio)
-                item.kind = .meeting; item.title = "Meeting · " + Date().formatted(date: .abbreviated, time: .shortened)
+                item.kind = .meeting; item.title = L("Meeting · ") + Date().formatted(Date.FormatStyle(date: .abbreviated, time: .shortened).locale(LautLocalization.locale))
                 try library.save(item); recordings.insert(item, at: 0); selected = item.id; section = "library"
                 if let folder = meetingDirectory { try? FileManager.default.removeItem(at: folder) }; meetingDirectory = nil
                 busy = false; transcribe(item.id)
             } catch {
-                busy = false; self.error = "Aufnahme nicht abgeschlossen. Vorhandene Audiospuren bleiben unter \(meetingDirectory?.path ?? "Bibliothek") erhalten. \(error.localizedDescription)"
-                status = "Meetingaufnahme prüfen"
+                busy = false; self.error = L("Aufnahme nicht abgeschlossen. Vorhandene Audiospuren bleiben unter \(meetingDirectory?.path ?? "Bibliothek") erhalten. \(error.localizedDescription)")
+                status = L("Meetingaufnahme prüfen")
             }
         }
     }
@@ -148,18 +149,18 @@ extension AppStore {
         guard !busy, !isRecording else { return }
         guard TextInsertion.permitted(), let app = NSWorkspace.shared.frontmostApplication,
               let anchor = TextInsertion.anchor(app), !anchor.text.isEmpty else {
-            error = "Markiere zuerst Text in einer App, die Bedienungshilfen unterstützt. Für diese Funktion ist die entsprechende macOS-Berechtigung erforderlich."; return
+            error = L("Markiere zuerst Text in einer App, die Bedienungshilfen unterstützt. Für diese Funktion ist die entsprechende macOS-Berechtigung erforderlich."); return
         }
         let text = anchor.text
-        perform("Auswahl lokal mit deinen Anweisungen bearbeiten …") {
+        perform(L("Auswahl lokal mit deinen Anweisungen bearbeiten …")) {
             let result = try await self.engine.refine(text, settings: self.settings)
             try Task.checkCancellation()
-            var note = Recording(title: "KI-Text · " + Date().formatted(), kind: .note); note.notes = text; note.refinedText = result
+            var note = Recording(title: L("KI-Text · ") + Date().formatted(.dateTime.locale(LautLocalization.locale)), kind: .note); note.notes = text; note.refinedText = result
             try self.library.save(note); self.recordings.insert(note, at: 0)
             if anchor.unchanged(),
                AXUIElementSetAttributeValue(anchor.element, kAXSelectedTextAttribute as CFString, result as CFString) == .success { return }
             self.selected = note.id; self.section = "library"
-            self.error = "Die Textauswahl hat sich geändert oder die App erlaubt kein Einfügen. Das Ergebnis ist als Notiz gespeichert."
+            self.error = L("Die Textauswahl hat sich geändert oder die App erlaubt kein Einfügen. Das Ergebnis ist als Notiz gespeichert.")
         }
     }
 }

@@ -1,0 +1,21 @@
+[package]
+name = "laut-capture"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Native microphone and meeting-audio adapter for Laut"
+[dependencies]
+laut-engine.workspace = true
+anyhow.workspace = true
+cpal = "=0.18.2"
+[target.'cfg(target_os = "macos")'.dependencies]
+screencapturekit = "=11.0.0"
+objc2 = "0.6"
+block2 = "0.6"
+objc2-av-foundation = { version = "=0.3.2", default-features = false, features = ["std", "AVCaptureDevice", "AVMediaFormat", "block2"] }
+[lints.rust]
+# Only the documented AVFoundation permission boundary opts into unsafe calls.
+unsafe_code = "deny"

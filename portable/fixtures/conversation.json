@@ -1,0 +1,21 @@
+{
+  "id": "A0000000-0000-4000-8000-000000000001",
+  "title": "Laut portable example",
+  "createdAt": 814000000.125,
+  "kind": "file",
+  "duration": 12,
+  "state": "complete",
+  "engine": "example",
+  "notes": "Original notes: Grüße 👋",
+  "refinedText": "",
+  "futureMetadata": {"keep": [1, "unchanged"], "largeInteger": 9007199254740993},
+  "source": {"url": "https://example.org/conference", "clipStart": 1800, "provider": "Example", "importedAt": 814000000.125},
+  "speakers": [{"id": "a", "name": "Speaker A"}, {"id": "b", "name": "Speaker B"}],
+  "segments": [
+    {"id": "A0000000-0000-4000-8000-000000000002", "start": 0, "end": 3, "text": "Grüße 👋 Welt!", "originalText": "Grüße 👋 Welt!", "speakerID": "a", "speakerLocked": false, "futureFlag": "keep", "words": [{"text": "Grüße", "start": 0, "end": 1}, {"text": "👋", "start": 1, "end": 2}, {"text": "Welt!", "start": 2, "end": 3}]},
+    {"id": "A0000000-0000-4000-8000-000000000003", "start": 3, "end": 6, "text": "Second sentence.", "originalText": "Second sentence.", "speakerID": "a", "speakerLocked": false, "words": []},
+    {"id": "A0000000-0000-4000-8000-000000000004", "start": 7, "end": 10, "text": "Here is the answer.", "originalText": "Here is the answer.", "speakerID": "b", "speakerLocked": false, "words": []}
+  ],
+  "conference": {"documents": [], "vocabulary": "", "language": "en", "chapters": [{"id": "A0000000-0000-4000-8000-000000000005", "start": 0, "title": "Opening", "origin": "Manuell"}], "slides": [], "ranges": []},
+  "editHistory": {"undo": [], "redo": []}
+}

@@ -18,28 +18,32 @@ public actor MarkdownArchive {
         formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.timeZone = timeZone; formatter.dateFormat = "yyyy-MM-dd"
         let invalid = CharacterSet.controlCharacters.union(CharacterSet(charactersIn: "/:\\"))
         let cleaned = record.title.components(separatedBy: invalid).joined(separator: " ").split(whereSeparator: \.isWhitespace).joined(separator: " ")
-        var title = String((cleaned.isEmpty ? "Transkript" : cleaned).prefix(100)).trimmingCharacters(in: CharacterSet(charactersIn: ". "))
+        var title = String((cleaned.isEmpty ? L("Transkript") : cleaned).prefix(100)).trimmingCharacters(in: CharacterSet(charactersIn: ". "))
         while title.utf8.count > 180 { title.removeLast() }
-        return formatter.string(from: record.createdAt) + " " + (title.isEmpty ? "Transkript" : title) + ".md"
+        return formatter.string(from: record.createdAt) + " " + (title.isEmpty ? L("Transkript") : title) + ".md"
     }
     public static func markdown(_ record: Recording) throws -> String {
         func quoted(_ value: String) throws -> String { String(decoding: try JSONEncoder().encode(value), as: UTF8.self) }
         var output = "---\nlaut_id: \(try quoted(record.id.uuidString))\ntitle: \(try quoted(record.title))\ncreated: \(try quoted(ISO8601DateFormatter().string(from: record.createdAt)))\nduration_seconds: \(record.duration)\nengine: \(try quoted(record.engine))\n---\n\n"
         output += "# " + record.title.replacingOccurrences(of: "\n", with: " ") + "\n\n"
         if let source = record.source {
-            output += "## Quelle\n\n" + source.provider + " · " + source.url + "\n\n"
-            if let publisher = source.publisher { output += "Herausgeber: " + publisher + "\n\n" }
-            if let published = source.publishedOn { output += "Veröffentlicht: " + published + "\n\n" }
-            output += "Importiert: " + ISO8601DateFormatter().string(from: source.importedAt) + "\n\n"
-            if let language = source.language { output += "Audiosprache: " + language + "\n\n" }
+            output += L("## Quelle\n\n") + source.provider + " · " + source.url + "\n\n"
+            if let publisher = source.publisher { output += L("Herausgeber: ") + publisher + "\n\n" }
+            if let published = source.publishedOn { output += L("Veröffentlicht: ") + published + "\n\n" }
+            output += L("Importiert: ") + ISO8601DateFormatter().string(from: source.importedAt) + "\n\n"
+            if let language = source.language { output += L("Audiosprache: ") + language + "\n\n" }
         }
-        if !record.refinedText.isEmpty { output += "## Auswertung\n\n" + record.refinedText + "\n\n" }
-        if !record.notes.isEmpty { output += "## Notizen\n\n" + record.notes + "\n\n" }
-        if !record.segments.isEmpty {
-            output += "## Transkript\n\n"
-            for paragraph in TranscriptLayout.paragraphs(record.segments) {
+        output += ConferenceLayout.markdown(record)
+        if record.transcriptionProgress != nil { output += L("\n**Unvollständiger Zwischenstand**\n\n") }
+        if !record.refinedText.isEmpty { output += L("## Auswertung\n\n") + record.refinedText + "\n\n" }
+        if !record.notes.isEmpty { output += L("## Notizen\n\n") + record.notes + "\n\n" }
+        if !record.segments.isEmpty && record.conference != nil {
+            output += ConferenceLayout.transcriptMarkdown(record)
+        } else if !record.segments.isEmpty {
+            output += L("## Transkript\n\n")
+            for paragraph in TranscriptLayout.paragraphs(record.segments, boundaries: record.conference?.chapters.map(\.start) ?? []) {
                 let speaker = record.speakers.isEmpty ? "" : record.speakerName(paragraph.speakerID) + " · "
-                output += "**\(speaker)\(Exporter.timestamp(paragraph.start))**\n\n\(paragraph.text)\n\n"
+                output += "**\(speaker)\(Exporter.timestamp(ConferenceLayout.sourceTime(paragraph.start, recording: record)))**\n\n\(paragraph.text)\n\n"
             }
         }
         return output

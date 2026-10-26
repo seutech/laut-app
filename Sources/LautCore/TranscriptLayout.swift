@@ -16,13 +16,15 @@ public struct TimedTextRange: Equatable, Sendable {
 
 public enum TranscriptLayout {
     /// A presentation-only grouping: never rewrites existing edits, IDs, or undo history.
-    public static func paragraphs(_ segments: [Segment]) -> [TranscriptParagraph] {
+    public static func paragraphs(_ segments: [Segment], boundaries: [Double] = []) -> [TranscriptParagraph] {
         var result: [TranscriptParagraph] = []
         var length = 0
         for segment in segments {
             if let last = result.last, let previous = last.segments.last,
                previous.speakerID == segment.speakerID,
-               !previous.speakerLocked, !segment.speakerLocked,
+               !boundaries.contains(where: { $0 > previous.start && $0 <= segment.start }),
+               (!previous.speakerLocked || previous.allowsParagraphGrouping == true),
+               (!segment.speakerLocked || segment.allowsParagraphGrouping == true),
                segment.start >= previous.start, segment.start - previous.end <= 3,
                segment.end - last.start <= 90, length + segment.text.count < 1400 {
                 result[result.count - 1].segments.append(segment); length += segment.text.count + 1
@@ -50,10 +52,10 @@ public enum TranscriptLayout {
     public static func applySpeakers(_ turns: [SpeakerTurn], to recording: inout Recording) {
         // IDs belong to one analysis; a new cluster must never steal a manually named speaker.
         let rawIDs = Array(Set(turns.map(\.speakerID))).sorted()
-        let speakers = rawIDs.enumerated().map { Speaker(name: "Sprecher \($0.offset + 1)") }
+        let speakers = rawIDs.enumerated().map { Speaker(name: L("Sprecher \($0.offset + 1)")) }
         let mapping = Dictionary(uniqueKeysWithValues: zip(rawIDs, speakers.map(\.id)))
         let mapped = turns.map { SpeakerTurn(speakerID: mapping[$0.speakerID]!, start: $0.start, end: $0.end) }
-        recording.segments = TranscriptEditor.assign(mapped, to: recording.segments)
+        recording.segments = TranscriptEditor.assign(mapped, to: recording.segments, repairGaps: true)
         let retained = Set(recording.segments.compactMap(\.speakerID))
         recording.speakers = (recording.speakers + speakers).filter { retained.contains($0.id) }
     }

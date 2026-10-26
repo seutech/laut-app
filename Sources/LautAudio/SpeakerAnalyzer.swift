@@ -26,7 +26,7 @@ public actor SpeakerAnalyzer {
         let folder = directory.appendingPathComponent("speaker-diarization")
         let files = ["Segmentation.mlmodelc", "Embedding.mlmodelc", "PldaRho.mlmodelc", "FBank.mlmodelc", "plda-parameters.json"]
         guard files.allSatisfy({ FileManager.default.fileExists(atPath: folder.appendingPathComponent($0).path) }) else {
-            throw LocalEngineError("Sprechermodelle fehlen. Bitte im Bereich Modelle herunterladen oder die Sprechererkennung ausschalten.")
+            throw LocalEngineError(L("Sprechermodelle fehlen. Bitte im Bereich Modelle herunterladen oder die Sprechererkennung ausschalten."))
         }
         return try await analyze(file, directory: directory, count: nil, progress: progress)
     }

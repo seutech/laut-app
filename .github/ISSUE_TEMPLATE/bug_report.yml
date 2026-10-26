@@ -1,0 +1,45 @@
+name: Bug report
+description: Report a reproducible problem in the Rust desktop app or CLI
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not attach private audio, transcripts, credentials or copyrighted source files.
+  - type: input
+    id: version
+    attributes:
+      label: Laut version
+      placeholder: 0.1.0-alpha.1
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options: [macOS Apple Silicon, macOS Intel, Windows x64, Linux x64, Linux ARM64, Other]
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Use synthetic or publicly shareable input where possible.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs or additional context

@@ -6,6 +6,25 @@ import LautAudio
     static func main() async throws {
         let args = CommandLine.arguments
         let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        if let input = try DiagnosticConfiguration.value("--align-speakers", in: args) {
+            guard let turns = try DiagnosticConfiguration.value("--turns", in: args),
+                  let output = try DiagnosticConfiguration.value("--output", in: args) else {
+                throw LocalEngineError("Provide --turns and a new --output directory")
+            }
+            try SpeakerAlignmentReview.run(recording: input, turns: turns, output: output); return
+        }
+        if args.contains("--recovery-workflow") { try await RecoveryWorkflow.run(project: root, arguments: args); return }
+        if let input = try DiagnosticConfiguration.value("--backup-library", in: args) {
+            guard let output = try DiagnosticConfiguration.value("--output", in: args) else { throw LocalEngineError("Provide --output with a new backup directory") }
+            let backup = URL(fileURLWithPath: output)
+            let manifest = try LibraryBackup.create(from: URL(fileURLWithPath: input), to: backup)
+            try LibraryBackup.restore(backup, to: backup.deletingLastPathComponent().appendingPathComponent(backup.lastPathComponent + "-restore"))
+            print("Backup and separate restore verified: \(manifest.files.count) files")
+            return
+        }
+        if let plan = try DiagnosticConfiguration.value("--conference-editorial", in: args) { try await ConferenceEditorial.run(plan: URL(fileURLWithPath: plan)); return }
+        if args.contains("--conference-batch") { try await ConferenceBatch.run(project: root, arguments: args); return }
+        if args.contains("--conference") { try await ConferenceWorkflow.run(project: root, arguments: args); return }
         if let input = try DiagnosticConfiguration.value("--link-import", in: args) {
             guard let output = try DiagnosticConfiguration.value("--output", in: args) else { throw LocalEngineError("Provide --output with a new local directory") }
             try await LinkWorkflow.run(project: root, input: input, output: URL(fileURLWithPath: output)); return
@@ -40,6 +59,10 @@ import LautAudio
         if args.contains("--diarize") {
             let turns = try await analyzer.analyze(temporary, directory: models, count: nil) { current, total in print("Speaker windows: \(current)/\(total)") }
             print("Speaker IDs: \(Set(turns.map(\.speakerID)).count), segments: \(turns.count)")
+            if let output = try DiagnosticConfiguration.value("--output", in: args) {
+                let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                try encoder.encode(turns).write(to: URL(fileURLWithPath: output), options: .withoutOverwriting)
+            }
         } else {
             let settings = try DiagnosticConfiguration.settings(project: root, arguments: args)
             let engine = TranscriptionEngine(worker: root.appendingPathComponent("Resources/mlx_worker.py"))

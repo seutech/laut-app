@@ -5,14 +5,14 @@ import CSQLite
 public enum SearchMode: String, Codable, CaseIterable, Identifiable, Sendable {
     case fullText, semantic, hybrid
     public var id: String { rawValue }
-    public var label: String { switch self { case .fullText: return "Volltext"; case .semantic: return "Bedeutung"; case .hybrid: return "Hybrid" } }
+    public var label: String { switch self { case .fullText: return L("Volltext"); case .semantic: return L("Bedeutung"); case .hybrid: return "Hybrid" } }
 }
 public enum EmbeddingModel: String, Codable, CaseIterable, Identifiable, Sendable {
     case small, base
     public var id: String { rawValue }
     public var modelID: String { "intfloat/multilingual-e5-" + rawValue }
     public var label: String { "Multilingual E5 " + rawValue.capitalized }
-    public var detail: String { self == .small ? "Deutsch + weitere Sprachen · ca. 495 MB Download · sparsamer Einstieg" : "Deutsch + weitere Sprachen · ca. 1,1 GB Download · höherer Speicherbedarf" }
+    public var detail: String { self == .small ? L("Deutsch + weitere Sprachen · ca. 495 MB Download · sparsamer Einstieg") : L("Deutsch + weitere Sprachen · ca. 1,1 GB Download · höherer Speicherbedarf") }
 }
 public struct SearchPassage: Codable, Identifiable, Sendable {
     public var id: String
@@ -23,13 +23,29 @@ public struct SearchPassage: Codable, Identifiable, Sendable {
     public var speaker: String
     public var start: Double?
     public var segmentID: UUID?
+    public var documentID: UUID?
+    public var pageNumber: Int?
     public var date: Double
     public var fingerprint: String
+    public var sourceLabel: String {
+        switch source {
+        case "Titel": return L("Titel")
+        case "Notizen": return L("Notizen")
+        case "Text-KI": return L("Text-KI")
+        case "Transkript": return L("Transkript")
+        default:
+            if documentID != nil, let pageNumber,
+               let suffix = source.range(of: " · Seite \(pageNumber)", options: [.backwards, .anchored]) {
+                return String(source[..<suffix.lowerBound]) + L(" · Seite \(pageNumber)")
+            }
+            return source
+        }
+    }
     public var embeddingText: String { title + "\n" + speaker + "\n" + text }
     public static func passages(_ recordings: [Recording]) -> [SearchPassage] {
         var result: [SearchPassage] = []
         for r in recordings {
-            func append(_ text: String, source: String, key: String, speaker: String = "", start: Double? = nil, segment: Segment? = nil) {
+            func append(_ text: String, source: String, key: String, speaker: String = "", start: Double? = nil, segment: Segment? = nil, documentID: UUID? = nil, pageNumber: Int? = nil) {
                 // Bound index units without cutting a Unicode scalar or losing trailing text.
                 let words = text.split(whereSeparator: \.isWhitespace)
                 var chunks: [(text: String, offset: Int)] = [], chunk = "", offset = 0
@@ -46,13 +62,18 @@ public struct SearchPassage: Codable, Identifiable, Sendable {
                     let id = "\(r.id.uuidString)/\(key)/\(n)"
                     let value = ["passage-v2", r.title, body, speaker, source, segment?.id.uuidString ?? "", position.map(String.init(describing:)) ?? "", String(r.createdAt.timeIntervalSince1970)].joined(separator: "\u{0}")
                     let hash = SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
-                    result.append(Self(id: id, recordingID: r.id, title: r.title, text: body, source: source, speaker: speaker, start: position, segmentID: segment?.id, date: r.createdAt.timeIntervalSince1970, fingerprint: hash))
+                    result.append(Self(id: id, recordingID: r.id, title: r.title, text: body, source: source, speaker: speaker, start: position, segmentID: segment?.id, documentID: documentID, pageNumber: pageNumber, date: r.createdAt.timeIntervalSince1970, fingerprint: hash))
                 }
             }
             append(r.title, source: "Titel", key: "title")
             append(r.notes, source: "Notizen", key: "notes")
             append(r.refinedText, source: "Text-KI", key: "refined")
-            for segment in r.segments {
+            for document in r.conference?.documents ?? [] {
+                for page in document.pages {
+                    append(page.text + (page.ocrText.map { "\n" + $0 } ?? ""), source: "PDF · " + document.title + " · Seite \(page.number)", key: "pdf/" + document.id.uuidString + "/\(page.number)", documentID: document.id, pageNumber: page.number)
+                }
+            }
+            for segment in ConferenceReview.includedSegments(r) {
                 append(segment.text, source: "Transkript", key: segment.id.uuidString, speaker: r.speakerName(segment.speakerID), start: segment.start, segment: segment)
             }
         }
@@ -124,7 +145,7 @@ public actor SearchIndex {
         default: throw failure()
         }
     }
-    private func failure() -> IndexError { IndexError(message: "Suchindex: " + (db.map { String(cString: sqlite3_errmsg($0)) } ?? "nicht erreichbar")) }
+    private func failure() -> IndexError { IndexError(message: L("Suchindex: ") + (db.map { String(cString: sqlite3_errmsg($0)) } ?? "nicht erreichbar")) }
     private func prepare(_ sql: String) throws -> OpaquePointer {
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else { throw failure() }; return statement
@@ -167,11 +188,11 @@ public actor SearchIndex {
         let s = try prepare("SELECT id,fingerprint FROM vectors WHERE model=?"); defer { sqlite3_finalize(s) }; bind([model], to: s)
         var ready: [String: String] = [:]
         while try row(s) { ready[string(s, 0)] = string(s, 1) }
-        return passages.values.filter { $0.source != "Titel" && ready[$0.id] != $0.fingerprint }.sorted { $0.id < $1.id }
+        return passages.values.filter { $0.source != L("Titel") && ready[$0.id] != $0.fingerprint }.sorted { $0.id < $1.id }
     }
     public func storeVectors(_ vectors: [[Float]], for items: [SearchPassage], model: String) throws {
         guard vectors.count == items.count, let dim = vectors.first?.count, dim > 0,
-              vectors.allSatisfy({ $0.count == dim && $0.allSatisfy(\.isFinite) && $0.contains(where: { $0 != 0 }) }) else { throw IndexError(message: "Ungültige Suchmodell-Ausgabe.") }
+              vectors.allSatisfy({ $0.count == dim && $0.allSatisfy(\.isFinite) && $0.contains(where: { $0 != 0 }) }) else { throw IndexError(message: L("Ungültige Suchmodell-Ausgabe.")) }
         try open(); try execute("BEGIN IMMEDIATE")
         do {
             for (p, vector) in zip(items, vectors) where passages[p.id]?.fingerprint == p.fingerprint {

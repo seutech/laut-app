@@ -16,6 +16,11 @@ public struct SpeakerChange: Codable, Sendable {
     public var after: [Speaker]
 }
 
+public struct ConferenceChange: Codable, Sendable {
+    public var before: ConferenceContext?
+    public var after: ConferenceContext?
+}
+
 /// Only changed ranges are retained, rather than a full transcript per keystroke.
 public struct EditRevision: Codable, Identifiable, Sendable {
     public var id = UUID()
@@ -27,12 +32,14 @@ public struct EditRevision: Codable, Identifiable, Sendable {
     public var refinedText: TextChange?
     public var segments: SegmentChange?
     public var speakers: SpeakerChange?
+    public var conference: ConferenceChange?
 
     fileprivate init?(before: Recording, after: Recording, label: String, key: String?, date: Date) {
         self.label = label; self.coalescingKey = key; self.date = date
         func change(_ a: String, _ b: String) -> TextChange? { a == b ? nil : TextChange(before: a, after: b) }
         title = change(before.title, after.title); notes = change(before.notes, after.notes)
         refinedText = change(before.refinedText, after.refinedText)
+        if before.conference != after.conference { conference = ConferenceChange(before: before.conference, after: after.conference) }
         if before.speakers != after.speakers { speakers = SpeakerChange(before: before.speakers, after: after.speakers) }
         let a = before.segments, b = after.segments
         if a != b {
@@ -41,7 +48,7 @@ public struct EditRevision: Codable, Identifiable, Sendable {
             while suffix < min(a.count, b.count) - prefix, a[a.count - suffix - 1] == b[b.count - suffix - 1] { suffix += 1 }
             segments = SegmentChange(index: prefix, before: Array(a[prefix..<(a.count - suffix)]), after: Array(b[prefix..<(b.count - suffix)]))
         }
-        if title == nil && notes == nil && refinedText == nil && segments == nil && speakers == nil { return nil }
+        if title == nil && notes == nil && refinedText == nil && segments == nil && speakers == nil && conference == nil { return nil }
     }
 
     /// Validate before applying; never restore stale file paths, job state or timing metadata.
@@ -51,6 +58,7 @@ public struct EditRevision: Codable, Identifiable, Sendable {
         if let expected = expected(notes), recording.notes != expected { return false }
         if let expected = expected(refinedText), recording.refinedText != expected { return false }
         if let speakers, recording.speakers != (forward ? speakers.before : speakers.after) { return false }
+        if let conference, recording.conference != (forward ? conference.before : conference.after) { return false }
         if let segments {
             let expected = forward ? segments.before : segments.after
             guard segments.index >= 0, segments.index <= recording.segments.count, expected.count <= recording.segments.count - segments.index,
@@ -60,6 +68,7 @@ public struct EditRevision: Codable, Identifiable, Sendable {
         if let notes { recording.notes = forward ? notes.after : notes.before }
         if let refinedText { recording.refinedText = forward ? refinedText.after : refinedText.before }
         if let speakers { recording.speakers = forward ? speakers.after : speakers.before }
+        if let conference { recording.conference = forward ? conference.after : conference.before }
         if let segments {
             let count = forward ? segments.before.count : segments.after.count
             recording.segments.replaceSubrange(segments.index..<(segments.index + count), with: forward ? segments.after : segments.before)

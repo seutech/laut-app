@@ -37,7 +37,7 @@ public final class TranscriptionEngine: @unchecked Sendable {
     public init(worker: URL) { self.worker = worker }
     private func runtime(_ settings: AppSettings, executable: String) throws -> URL {
         let url = URL(fileURLWithPath: settings.runtimeDirectory).appendingPathComponent("venv/bin/" + executable)
-        guard FileManager.default.isExecutableFile(atPath: url.path) else { throw LocalEngineError("Lokale Laufzeit fehlt. Führe scripts/setup-runtime.sh im Projekt aus und wähle unter Einstellungen den .runtime-Ordner.") }
+        guard FileManager.default.isExecutableFile(atPath: url.path) else { throw LocalEngineError(L("Lokale Laufzeit fehlt. Führe scripts/setup-runtime.sh im Projekt aus und wähle unter Einstellungen den .runtime-Ordner.")) }
         return url
     }
     private func request(_ body: [String: Any], settings: AppSettings, online: Bool = false) async throws -> Data {
@@ -49,15 +49,15 @@ public final class TranscriptionEngine: @unchecked Sendable {
         return try await runner.run(executable: runtime(settings, executable: "python"), arguments: [worker.path, file.path], networkAllowed: online)
     }
     public func transcribe(audio: URL, settings: AppSettings, vocabulary: [VocabularyEntry]) async throws -> TranscriptResult {
-        guard let modelPath = settings.modelPaths[settings.engine.rawValue], FileManager.default.fileExists(atPath: modelPath) else { throw LocalEngineError("Bitte \(settings.engine.label) zuerst im Bereich Modelle installieren oder einen lokalen Modellordner auswählen.") }
+        guard let modelPath = settings.modelPaths[settings.engine.rawValue], FileManager.default.fileExists(atPath: modelPath) else { throw LocalEngineError(L("Bitte \(settings.engine.label) zuerst im Bereich Modelle installieren oder einen lokalen Modellordner auswählen.")) }
         let terms = vocabulary.filter { $0.active && !$0.term.isEmpty }.prefix(25).map(\.term)
         let data = try await request(["operation": "transcribe", "engine": settings.engine.rawValue, "audio": audio.path, "modelPath": modelPath, "language": settings.language, "hotwords": terms], settings: settings)
         let result = try JSONDecoder().decode(TranscriptResult.self, from: data)
-        guard result.truncated != true else { throw LocalEngineError("Das Modell meldet eine abgeschnittene Transkription. Das Ergebnis wurde nicht als vollständig gespeichert.") }
+        guard result.truncated != true else { throw LocalEngineError(L("Das Modell meldet eine abgeschnittene Transkription. Das Ergebnis wurde nicht als vollständig gespeichert.")) }
         return result
     }
     public func preload(settings: AppSettings) async throws {
-        guard let path = settings.modelPaths[settings.engine.rawValue] else { throw LocalEngineError("Bitte zuerst ein Modell installieren.") }
+        guard let path = settings.modelPaths[settings.engine.rawValue] else { throw LocalEngineError(L("Bitte zuerst ein Modell installieren.")) }
         _ = try await request(["operation": "preload", "engine": settings.engine.rawValue, "modelPath": path], settings: settings)
     }
     public func download(_ engine: EngineKind, settings: AppSettings, progress: @escaping @Sendable (String) -> Void = { _ in }) async throws -> String {
@@ -67,7 +67,7 @@ public final class TranscriptionEngine: @unchecked Sendable {
             let output = try await runner.run(executable: runtime(settings, executable: "fermion"), arguments: ["transcribe", "phonon-2", "/dev/null", "--download-only"], networkAllowed: true,
                 environment: ["FERMION_CACHE_DIR": cache.path, "HF_HOME": cache.appendingPathComponent("huggingface").path])
             let path = String(data: output, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            guard FileManager.default.fileExists(atPath: path) else { throw LocalEngineError("Download lieferte keinen gültigen Modellordner.") }
+            guard FileManager.default.fileExists(atPath: path) else { throw LocalEngineError(L("Download lieferte keinen gültigen Modellordner.")) }
             return path
         }
         return try await downloadModel(engine.modelID, settings: settings, progress: progress)
@@ -88,13 +88,13 @@ public final class TranscriptionEngine: @unchecked Sendable {
         defer { monitor.cancel(); try? FileManager.default.removeItem(at: folder) }
         let data = try await request(["operation": "download", "modelID": modelID, "cache": settings.runtimeDirectory + "/models/huggingface", "progressPath": file.path], settings: settings, online: true)
         let result = try JSONSerialization.jsonObject(with: data) as? [String: String]
-        guard let path = result?["path"] else { throw LocalEngineError("Modell-Download fehlgeschlagen.") }; return path
+        guard let path = result?["path"] else { throw LocalEngineError(L("Modell-Download fehlgeschlagen.")) }; return path
     }
     public func refine(_ text: String, settings: AppSettings) async throws -> String {
-        guard !settings.llmModelPath.isEmpty else { throw LocalEngineError("Bitte zuerst ein lokales Textmodell unter Modelle installieren.") }
-        guard text.count < 24000 else { throw LocalEngineError("Bitte für die Text-KI einen kürzeren Abschnitt auswählen (max. 24.000 Zeichen). Das Original bleibt erhalten.") }
+        guard !settings.llmModelPath.isEmpty else { throw LocalEngineError(L("Bitte zuerst ein lokales Textmodell unter Modelle installieren.")) }
+        guard text.count < 24000 else { throw LocalEngineError(L("Bitte für die Text-KI einen kürzeren Abschnitt auswählen (max. 24.000 Zeichen). Das Original bleibt erhalten.")) }
         let data = try await request(["operation": "refine", "modelPath": settings.llmModelPath, "text": text, "instructions": settings.customInstructions], settings: settings)
         let value = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        guard let result = value?["text"] as? String else { throw LocalEngineError("Kein Text vom Modell erhalten.") }; return result
+        guard let result = value?["text"] as? String else { throw LocalEngineError(L("Kein Text vom Modell erhalten.")) }; return result
     }
 }

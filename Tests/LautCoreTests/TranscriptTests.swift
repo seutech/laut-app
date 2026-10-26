@@ -28,10 +28,14 @@ struct TranscriptTests {
         suite.testAutomaticSpeakersRetainManualPeople()
         suite.testDictionaryCorrectionDoesNotHideInitialSpeakerChanges()
         print("22 core checks passed")
+        SpeakerAlignmentTests.run()
+        try LocalizationTests.run()
         try await SearchTests.run()
         try await StabilityTests.run()
         try await MarkdownArchiveTests.run()
         try ImportJobTests.run()
+        try ConferenceTests.run()
+        try await RecoveryTests.run()
     }
     func testDiarizationRespectsManualSpeakerAndTextEdits() {
         var locked = Segment(start: 0, end: 2, text: "Mein Name", speakerID: "person")
@@ -310,7 +314,7 @@ struct TranscriptTests {
     }
 }
 
-func XCTAssertEqual<T: Equatable>(_ a: T, _ b: T, file: StaticString = #filePath, line: UInt = #line) { precondition(a == b, "Expected \(a) == \(b)", file: file, line: line) }
-func XCTAssertTrue(_ value: Bool, file: StaticString = #filePath, line: UInt = #line) { precondition(value, "Expected true", file: file, line: line) }
-func XCTAssertNotNil<T>(_ value: T?, file: StaticString = #filePath, line: UInt = #line) { precondition(value != nil, "Expected value", file: file, line: line) }
+func XCTAssertEqual<T: Equatable>(_ a: T, _ b: T, file: StaticString = #file, line: UInt = #line) { precondition(a == b, "Expected \(a) == \(b)", file: file, line: line) }
+func XCTAssertTrue(_ value: Bool, file: StaticString = #file, line: UInt = #line) { precondition(value, "Expected true", file: file, line: line) }
+func XCTAssertNotNil<T>(_ value: T?, file: StaticString = #file, line: UInt = #line) { precondition(value != nil, "Expected value", file: file, line: line) }
 func XCTUnwrap<T>(_ value: T?) throws -> T { guard let value else { throw NSError(domain: "Check", code: 1) }; return value }

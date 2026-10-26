@@ -1,9 +1,10 @@
+import LautCore
 import Foundation
 
 public struct LocalEngineError: LocalizedError {
     public let message: String
     public init(_ message: String) { self.message = message }
-    public var errorDescription: String? { message }
+    public var errorDescription: String? { LautLocalization.workerMessage(message) }
 }
 
 /// No shell interpolation. Both streams go to files to avoid pipe-buffer deadlocks.
@@ -50,7 +51,7 @@ public final class ProcessRunner: @unchecked Sendable {
                         process.waitUntilExit()
                         guard process.terminationStatus == 0 else {
                             let details = String(data: try Data(contentsOf: err), encoding: .utf8) ?? ""
-                            throw LocalEngineError(details.isEmpty ? "Verarbeitung abgebrochen (\(process.terminationStatus))." : String(details.suffix(4000)))
+                            throw LocalEngineError(details.isEmpty ? L("Verarbeitung abgebrochen (\(process.terminationStatus)).") : String(details.suffix(4000)))
                         }
                         continuation.resume(returning: try Data(contentsOf: out))
                     } catch { continuation.resume(throwing: error) }

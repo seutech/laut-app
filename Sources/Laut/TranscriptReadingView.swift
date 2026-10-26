@@ -24,7 +24,7 @@ struct TranscriptReadingView: View {
                           let time = Double(raw), time.isFinite else { return .discarded }
                     seek(time); return .handled
                 })
-                .help("Auf ein Wort klicken, um dorthin zu spulen. Bei bearbeitetem Text oder fehlenden Wortzeitmarken wird der Abschnittsanfang verwendet.")
+                .help(L("Auf ein Wort klicken, um dorthin zu spulen. Bei bearbeitetem Text oder fehlenden Wortzeitmarken wird der Abschnittsanfang verwendet."))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 10).padding(.horizontal, 12)

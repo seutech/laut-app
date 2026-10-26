@@ -1,0 +1,2 @@
+"NSMicrophoneUsageDescription" = "Laut records your microphone only when you start a recording and processes the audio locally.";
+"NSScreenCaptureUsageDescription" = "Laut needs system audio access to record the sound of your meetings locally.";

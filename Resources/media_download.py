@@ -19,9 +19,10 @@ import sys
 import time
 import urllib.parse
 import urllib.request
+import uuid
 
 MAX_BYTES = 2 * 1024**3
-MAX_SECONDS = 6 * 3600
+MAX_SECONDS = 24 * 3600
 RESERVE_BYTES = 512 * 1024**2
 ACTIVE = None
 CANCELLED = False
@@ -153,7 +154,7 @@ def inspect_audio(path, folder, ffprobe):
         raise ValueError('Die Quelle enthält Video. Laut lädt ausschließlich Audio.')
     duration = float(probe.get('format', {}).get('duration', 0))
     if not math.isfinite(duration) or not 0 < duration <= MAX_SECONDS:
-        raise ValueError('Der Linkimport unterstützt abgeschlossene Aufnahmen bis sechs Stunden.')
+        raise ValueError('Der Linkimport unterstützt abgeschlossene Aufnahmen bis 24 Stunden.')
     return duration
 
 
@@ -167,6 +168,12 @@ def yt_arguments(args):
 
 def download(args):
     check_cancelled()
+    clip_start = getattr(args, 'clip_start', None)
+    clip_end = getattr(args, 'clip_end', None)
+    if (clip_start is None) != (clip_end is None):
+        raise ValueError('Start und Ende des Ausschnitts werden gemeinsam benötigt.')
+    if clip_start is not None and not (math.isfinite(clip_start) and math.isfinite(clip_end) and 0 <= clip_start < clip_end <= MAX_SECONDS):
+        raise ValueError('Ungültiger Ausschnitt (maximal 24 Stunden).')
     folder = Path(args.folder)
     folder.mkdir(parents=True, exist_ok=True, mode=0o700)
     result_path = folder / 'result.json'
@@ -175,6 +182,8 @@ def download(args):
         filename = result.get('filename', '')
         if filename != 'audio.m4a' or result.get('source', {}).get('url') != args.url:
             raise ValueError('Ungültiger Download-Zwischenstand.')
+        if result.get('source', {}).get('clipStart') != clip_start or result.get('source', {}).get('clipEnd') != clip_end:
+            raise ValueError('Der gespeicherte Download gehört zu einem anderen Ausschnitt.')
         media = folder / filename
         if media.is_file() and not media.is_symlink() and media.stat().st_size == result.get('fileSize'):
             return result
@@ -190,6 +199,8 @@ def download(args):
     metadata = {'url': args.url, 'provider': args.provider,
                 'importedAt': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}
     expected_duration = None
+    if clip_start is not None:
+        metadata.update(clipStart=clip_start, clipEnd=clip_end)
     if args.provider == 'YouTube':
         if not re.fullmatch(r'https://www\.youtube\.com/watch\?v=[A-Za-z0-9_-]{11}', args.url):
             raise ValueError('Ungültiger YouTube-Videolink.')
@@ -198,8 +209,18 @@ def download(args):
             raise ValueError('Bitte ein einzelnes, vollständig veröffentlichtes Video verwenden.')
         duration = float(info.get('duration') or 0)
         if not 0 < duration <= MAX_SECONDS:
-            raise ValueError('Der Linkimport unterstützt Videos bis sechs Stunden.')
-        expected_duration = duration
+            raise ValueError('Der Linkimport unterstützt Videos bis 24 Stunden.')
+        metadata['originalDuration'] = duration
+        if clip_end is not None and clip_end > duration:
+            raise ValueError('Der Ausschnitt endet nach dem Videoende.')
+        expected_duration = clip_end - clip_start if clip_start is not None else duration
+        offset, finish = clip_start or 0, clip_end or duration
+        chapters = []
+        for chapter in info.get('chapters') or []:
+            begin, end = chapter.get('start_time'), chapter.get('end_time')
+            if isinstance(begin, (int, float)) and math.isfinite(begin) and isinstance(end, (int, float)) and end > offset and begin < finish:
+                chapters.append({'id': str(uuid.uuid4()), 'start': max(0, begin - offset), 'title': str(chapter.get('title') or 'Kapitel'), 'origin': 'YouTube'})
+        metadata['chapters'] = chapters
         if info.get('vcodec') not in ('none', None) or info.get('acodec') in ('none', None):
             raise ValueError('Keine separate Audiospur verfügbar.')
         size = info.get('filesize') or info.get('filesize_approx') or 0
@@ -211,8 +232,9 @@ def download(args):
         if published and re.fullmatch(r'\d{8}', published):
             metadata['publishedOn'] = datetime.datetime.strptime(published, '%Y%m%d').strftime('%Y-%m-%d')
         title = info.get('title') or 'YouTube-Audio'
-        run(yt_arguments(args) + ['--no-progress', '--no-part', '-o', str(folder / 'source.%(ext)s'), '--', args.url],
-            folder, 'YouTube-Audio laden', timeout=3600, enforce_size=True)
+        section = ['--download-sections', f'*{clip_start}-{clip_end}'] if clip_start is not None else []
+        run(yt_arguments(args) + section + ['--no-progress', '--no-part', '-o', str(folder / 'source.%(ext)s'), '--', args.url],
+            folder, 'YouTube-Audio laden', timeout=max(3600, expected_duration * 2 + 300), enforce_size=True)
         sources = [p for p in folder.glob('source.*') if p.is_file() and not p.is_symlink()]
         if len(sources) != 1:
             raise ValueError('Download lieferte keine eindeutige vollständige Audiodatei.')
@@ -222,6 +244,18 @@ def download(args):
         title = Path(urllib.parse.unquote(urllib.parse.urlsplit(args.url).path)).stem or 'Audio-Link'
         metadata['originalTitle'] = title
     duration = inspect_audio(source, folder, args.ffprobe)
+    if args.provider != 'YouTube':
+        metadata['originalDuration'] = duration
+        if clip_start is not None:
+            if clip_end > duration:
+                raise ValueError('Der Ausschnitt endet nach dem Audioende.')
+            clipped = folder / 'clip.m4a'
+            run([args.ffmpeg, '-nostdin', '-v', 'error', '-y', '-ss', str(clip_start), '-i', str(source),
+                 '-t', str(clip_end - clip_start), '-map', '0:a:0', '-vn', '-c:a', 'aac', '-b:a', '128k', str(clipped)],
+                folder, 'Audioausschnitt vorbereiten', timeout=3600)
+            source.unlink(); source = clipped
+            duration = inspect_audio(source, folder, args.ffprobe)
+            expected_duration = clip_end - clip_start
     if expected_duration is not None and abs(duration - expected_duration) > max(3, expected_duration * 0.005):
         raise ValueError('Die geladene Audiospur stimmt nicht mit der angekündigten Länge überein. Bitte erneut versuchen.')
     if source.stat().st_size > MAX_BYTES:
@@ -248,6 +282,8 @@ def main():
     parser = argparse.ArgumentParser()
     for name in ('url', 'provider', 'folder', 'ytdlp', 'deno', 'ffmpeg', 'ffprobe'):
         parser.add_argument('--' + name, required=True)
+    parser.add_argument('--clip-start', type=float)
+    parser.add_argument('--clip-end', type=float)
     args = parser.parse_args()
     signal.signal(signal.SIGTERM, cancel)
     signal.signal(signal.SIGINT, cancel)

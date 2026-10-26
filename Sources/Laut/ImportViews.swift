@@ -8,27 +8,54 @@ struct ImportJobsView: View {
     @State private var link = ""
     @State private var autoTranscribe = true
     @State private var removal: UUID?
+    @State private var useClip = false
+    @State private var clipStart = "00:00"
+    @State private var clipEnd = "30:00"
+    @State private var documents: [URL] = []
+    @State private var terms = ""
+    @State private var language = "en"
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("Quellen & Aufträge").font(.largeTitle.bold())
-            Text("YouTube oder einen direkten Audio-Link einfügen. Audio, Transkript und Quellenangaben werden lokal gespeichert.").foregroundStyle(.secondary)
+            Text(L("Quellen & Aufträge")).font(.largeTitle.bold())
+            Text(L("YouTube oder einen direkten Audio-Link einfügen. Audio, Transkript und Quellenangaben werden lokal gespeichert.")).foregroundStyle(.secondary)
             HStack {
-                TextField("https://www.youtube.com/watch?v=… oder https://…/audio.mp3", text: $link)
+                TextField(L("https://www.youtube.com/watch?v=… oder https://…/audio.mp3"), text: $link)
                     .textFieldStyle(.roundedBorder).onSubmit { submit() }
-                Button("Laden") { submit() }.buttonStyle(.borderedProminent).disabled(link.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.queueError != nil)
+                Button(L("Laden")) { submit() }.buttonStyle(.borderedProminent).disabled(link.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.queueError != nil)
             }
-            Toggle("Nach dem Laden automatisch transkribieren", isOn: $autoTranscribe)
-            Text("Nur Audio · bis 6 Stunden / 2 GiB je Link · keine laufenden Livestreams oder Playlists. Die Quelle sieht den Abruf und deine IP-Adresse. Kein Login, keine Browser-Cookies. Transkription bleibt offline.").font(.caption).foregroundStyle(.secondary)
+            GroupBox(L("Konferenz vorbereiten")) {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Toggle(L("Nur Ausschnitt"), isOn: $useClip)
+                        TextField("Start", text: $clipStart).frame(width: 85).textFieldStyle(.roundedBorder).disabled(!useClip)
+                        Text("bis")
+                        TextField(L("Ende"), text: $clipEnd).frame(width: 85).textFieldStyle(.roundedBorder).disabled(!useClip)
+                        Button(L("Erste 30 Minuten")) { useClip = true; clipStart = "00:00"; clipEnd = "30:00" }
+                        Spacer()
+                        Picker(L("Sprache"), selection: $language) { Text(L("Englisch")).tag("en"); Text(L("Deutsch")).tag("de"); Text(L("Automatisch")).tag("auto") }.frame(width: 200)
+                    }
+                    HStack {
+                        Button(L("PDFs auswählen …")) { documents += ConferenceView.choosePDFs() }
+                        Text(L("\(documents.count) Unterlagen")).font(.caption)
+                        if !documents.isEmpty { Button(L("Auswahl leeren")) { documents = [] } }
+                        Text(L("Auch später im Reiter Konferenz ergänzbar.")).font(.caption).foregroundStyle(.secondary)
+                    }
+                    if !documents.isEmpty { Text(documents.map(\.lastPathComponent).joined(separator: " · ")).font(.caption).lineLimit(2) }
+                    TextField(L("Bekannte Namen / Fachbegriffe (eine Zeile pro Begriff)"), text: $terms, axis: .vertical).lineLimit(2...4).textFieldStyle(.roundedBorder)
+                }.padding(8)
+            }
+            Toggle(L("Nach dem Laden automatisch transkribieren"), isOn: $autoTranscribe)
+            Text(L("Nur Audio · bis 24 Stunden / 2 GiB je Link · keine laufenden Livestreams oder Playlists. Die Quelle sieht den Abruf und deine IP-Adresse. Kein Login, keine Browser-Cookies. Transkription bleibt offline.")).font(.caption).foregroundStyle(.secondary)
             let missing = DownloadTools(settings: store.settings).missing
             if !missing.isEmpty {
-                HStack { Text("Download-Werkzeuge fehlen: " + missing.joined(separator: ", ")).font(.caption).foregroundStyle(.orange); Button("Einrichten") { store.section = "settings" } }
+                HStack { Text(L("Download-Werkzeuge fehlen: ") + missing.joined(separator: ", ")).font(.caption).foregroundStyle(.orange); Button(L("Einrichten")) { store.section = "settings" } }
             }
             if let error = store.queueError { Text(error).foregroundStyle(.red).textSelection(.enabled) }
             HStack {
-                Text("\(store.waitingJobs) wartend").font(.subheadline)
+                Text(L("\(store.waitingJobs) wartend")).font(.subheadline)
                 Spacer()
-                Button("Dateien hinzufügen …") { store.chooseFiles() }
-                Button("Alle pausieren") { store.pauseImportQueue() }.disabled(!store.importJobs.contains { $0.stage.unfinished })
+                Button(L("Dateien hinzufügen …")) { store.chooseFiles() }
+                Button(L("Alle pausieren")) { store.pauseImportQueue() }.disabled(!store.importJobs.contains { $0.stage.unfinished })
             }
             ScrollView {
                 LazyVStack(spacing: 10) {
@@ -45,54 +72,61 @@ struct ImportJobsView: View {
                                 Text(store.importStatus.isEmpty ? store.status : store.importStatus).font(.caption).foregroundStyle(.secondary)
                             }
                             HStack {
-                                Text(job.createdAt.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary)
+                                Text(job.createdAt.formatted(Date.FormatStyle(date: .abbreviated, time: .shortened).locale(LautLocalization.locale))).font(.caption).foregroundStyle(.secondary)
                                 Spacer()
                                 if store.recordings.contains(where: { $0.id == job.recordingID }) {
-                                    Button("Öffnen") { store.selected = job.recordingID; store.section = "library" }
+                                    Button(L("Öffnen")) { store.selected = job.recordingID; store.section = "library" }
                                 }
-                                if job.stage == .paused || job.stage == .failed { Button("Fortsetzen") { store.resumeImport(job.id) }.disabled(store.queueError != nil) }
-                                Button("Entfernen …", role: .destructive) { removal = job.id }.disabled(store.activeImportID == job.id || store.queueError != nil)
+                                if job.stage == .paused || job.stage == .failed { Button(L("Fortsetzen")) { store.resumeImport(job.id) }.disabled(store.queueError != nil) }
+                                Button(L("Entfernen …"), role: .destructive) { removal = job.id }.disabled(store.activeImportID == job.id || store.queueError != nil)
                             }
                         }.padding(14).background(Color.secondary.opacity(0.07), in: RoundedRectangle(cornerRadius: 12))
                     }
                 }
             }
-            Text("Nach einem Neustart bleiben offene Aufträge pausiert. Fortsetzen nutzt bereits übernommenes Audio. Unvollständige Downloads beginnen erneut; Transkription verwendet das aktuell gewählte Modell.").font(.caption).foregroundStyle(.secondary)
+            Text(L("Nach einem Neustart bleiben offene Aufträge pausiert. Fortsetzen nutzt bereits übernommenes Audio. Unvollständige Downloads beginnen erneut; Transkription speichert alle fünf Minuten einen Zwischenstand. Zum Fortsetzen dasselbe Modell verwenden.")).font(.caption).foregroundStyle(.secondary)
         }.padding(28)
-        .confirmationDialog("Auftrag und verbliebene Download-Zwischendateien entfernen? Bereits übernommene Bibliothekseinträge bleiben erhalten.", isPresented: Binding(get: { removal != nil }, set: { if !$0 { removal = nil } })) {
-            Button("Auftrag entfernen", role: .destructive) { if let removal { store.removeImport(removal) }; removal = nil }
+        .confirmationDialog(L("Auftrag und verbliebene Download-Zwischendateien entfernen? Bereits übernommene Bibliothekseinträge bleiben erhalten."), isPresented: Binding(get: { removal != nil }, set: { if !$0 { removal = nil } })) {
+            Button(L("Auftrag entfernen"), role: .destructive) { if let removal { store.removeImport(removal) }; removal = nil }
         }
     }
     func submit() {
         guard !link.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         let previousCount = store.importJobs.count
-        store.addLink(link, autoTranscribe: autoTranscribe)
-        if store.importJobs.count > previousCount { link = "" }
+        do {
+            var clip: MediaClip?
+            if useClip {
+                guard let start = TranscriptNavigation.parseTime(clipStart), let end = TranscriptNavigation.parseTime(clipEnd) else { throw ImportJobError(L("Start/Ende bitte als mm:ss oder hh:mm:ss eingeben.")) }
+                clip = try MediaClip(start: start, end: end)
+            }
+            store.addLink(link, autoTranscribe: autoTranscribe, clip: clip, documents: documents, vocabulary: terms, language: language)
+        } catch { store.error = error.localizedDescription }
+        if store.importJobs.count > previousCount { link = ""; documents = []; terms = "" }
     }
 }
 
 struct LinkImportSettings: View {
     @EnvironmentObject var store: AppStore
     var body: some View {
-        GroupBox("Linkimport") {
+        GroupBox(L("Linkimport")) {
             VStack(alignment: .leading, spacing: 10) {
-                Text("YouTube verwendet yt-dlp, passende EJS-Komponenten und Deno (ab 2.3). FFmpeg/FFprobe prüfen und konvertieren Audio. Werkzeuge werden nur für ausdrücklich gestartete Linkimporte verwendet.").font(.caption).foregroundStyle(.secondary)
+                Text(L("YouTube verwendet yt-dlp, passende EJS-Komponenten und Deno (ab 2.3). FFmpeg/FFprobe prüfen und konvertieren Audio. Werkzeuge werden nur für ausdrücklich gestartete Linkimporte verwendet.")).font(.caption).foregroundStyle(.secondary)
                 ForEach(["yt-dlp", "deno", "ffmpeg", "ffprobe"], id: \.self) { name in
                     HStack {
                         Text(name).frame(width: 75, alignment: .leading)
-                        Text(DownloadTools(settings: store.settings).path(name) ?? "Nicht gefunden").font(.caption.monospaced()).lineLimit(2).textSelection(.enabled)
+                        Text(DownloadTools(settings: store.settings).path(name) ?? L("Nicht gefunden")).font(.caption.monospaced()).lineLimit(2).textSelection(.enabled)
                         Spacer()
-                        Button("Wählen …") {
+                        Button(L("Wählen …")) {
                             let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
                             if panel.runModal() == .OK, let url = panel.url {
                                 var paths = store.settings.downloadToolPaths ?? [:]; paths[name] = url.path
                                 store.settings.downloadToolPaths = paths; store.saveSettings()
                             }
                         }
-                        Button("Automatisch") { store.settings.downloadToolPaths?.removeValue(forKey: name); store.saveSettings() }
+                        Button(L("Automatisch")) { store.settings.downloadToolPaths?.removeValue(forKey: name); store.saveSettings() }
                     }
                 }
-                Text("Entwicklerversion: scripts/setup-downloads.sh installiert yt-dlp samt EJS separat. Deno und FFmpeg müssen zusätzlich vorhanden sein. Es werden keine Werkzeuge beim Einfügen eines Links nachgeladen.").font(.caption).foregroundStyle(.secondary)
+                Text(L("Entwicklerversion: scripts/setup-downloads.sh installiert yt-dlp samt EJS separat. Deno und FFmpeg müssen zusätzlich vorhanden sein. Es werden keine Werkzeuge beim Einfügen eines Links nachgeladen.")).font(.caption).foregroundStyle(.secondary)
             }.padding(12)
         }
     }
@@ -105,14 +139,17 @@ struct RecordingSourceView: View {
         HStack(alignment: .top, spacing: 12) {
             if let source = record.source {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text([source.provider, source.publisher, source.publishedOn.map { "Veröffentlicht: " + $0 }, source.language.map { "Sprache: " + $0 }].compactMap { $0 }.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary)
-                    if let url = URL(string: source.url), url.scheme == "https" { Link("Originalquelle öffnen", destination: url).font(.caption) }
+                    Text([source.providerLabel, source.publisher, source.publishedOn.map { L("Veröffentlicht: ") + $0 }, source.language.map { L("Sprache: ") + $0 }].compactMap { $0 }.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary)
+                    if let start = source.clipStart, let end = source.clipEnd {
+                        Text(L("Ausschnitt im Original: ") + Exporter.timestamp(start) + "–" + Exporter.timestamp(end)).font(.caption).foregroundStyle(.secondary)
+                    }
+                    if let url = URL(string: source.url), url.scheme == "https" { Link(L("Originalquelle öffnen"), destination: url).font(.caption) }
                 }
             }
             Spacer()
             if let audio = store.library.audioURL(record) {
-                Button("Audio im Finder") { NSWorkspace.shared.activateFileViewerSelecting([audio]) }.font(.caption)
-                Button("Audio extern öffnen") { NSWorkspace.shared.open(audio) }.font(.caption)
+                Button(L("Audio im Finder")) { NSWorkspace.shared.activateFileViewerSelecting([audio]) }.font(.caption)
+                Button(L("Audio extern öffnen")) { NSWorkspace.shared.open(audio) }.font(.caption)
             }
         }
     }

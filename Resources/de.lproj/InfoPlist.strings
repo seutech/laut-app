@@ -1,0 +1,2 @@
+"NSMicrophoneUsageDescription" = "Laut nimmt dein Mikrofon nur nach dem Start einer Aufnahme auf und verarbeitet das Audio lokal.";
+"NSScreenCaptureUsageDescription" = "Laut benötigt Systemaudio-Zugriff, um den Ton deiner Meetings lokal aufzuzeichnen.";

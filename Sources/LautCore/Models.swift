@@ -15,6 +15,9 @@ public struct Segment: Identifiable, Codable, Equatable, Sendable {
     public var originalText: String
     public var speakerID: String?
     public var speakerLocked: Bool = false
+    /// Naming a voice protects attribution without imposing a manual paragraph boundary.
+    /// Missing in older recordings: retain their existing boundary behavior.
+    public var allowsParagraphGrouping: Bool?
     public var words: [Word]
     public init(start: Double, end: Double, text: String, speakerID: String? = nil, words: [Word] = []) {
         self.start = start; self.end = end; self.text = text; self.originalText = text
@@ -28,7 +31,7 @@ public struct Speaker: Identifiable, Codable, Equatable, Sendable {
     public init(id: String = UUID().uuidString, name: String) { self.id = id; self.name = name }
 }
 
-public struct SpeakerTurn: Sendable {
+public struct SpeakerTurn: Codable, Sendable {
     public var speakerID: String
     public var start: Double
     public var end: Double
@@ -55,6 +58,8 @@ public struct Recording: Identifiable, Codable, Sendable {
     public var error: String?
     public var engine: String = ""
     public var source: SourceMetadata?
+    public var conference: ConferenceContext?
+    public var transcriptionProgress: Double?
     public var processingSeconds: Double?
     public var modelLoadSeconds: Double?
     public var transcriptionSeconds: Double?
@@ -64,8 +69,8 @@ public struct Recording: Identifiable, Codable, Sendable {
     public init(title: String, kind: DocumentKind = .file, audioFilename: String? = nil) {
         self.title = title; self.kind = kind; self.audioFilename = audioFilename
     }
-    public func speakerName(_ id: String?) -> String { speakers.first { $0.id == id }?.name ?? "Unzugeordnet" }
-    public var plainText: String { segments.map(\.text).joined(separator: " ") }
+    public func speakerName(_ id: String?) -> String { speakers.first { $0.id == id }?.name ?? L("Unzugeordnet") }
+    public var plainText: String { ConferenceReview.includedSegments(self).map(\.text).joined(separator: " ") }
 }
 
 public struct VocabularyEntry: Identifiable, Codable, Sendable {
@@ -91,14 +96,16 @@ public enum EngineKind: String, Codable, CaseIterable, Identifiable, Sendable {
     }
     public var detail: String {
         switch self {
-        case .phonon: return "164 MB Download · Fokus Englisch · im deutschen Zweistimmentest wurden ganze Sätze ausgelassen"
-        case .parakeet: return "Empfohlen für deutsche Gespräche · 25 europäische Sprachen · ca. 1–3 GB"
-        case .qwen: return "Experimentell · mehrsprachig · ca. 1 GB · nur Abschnittszeitmarken"
+        case .phonon: return L("164 MB Download · Fokus Englisch · im deutschen Zweistimmentest wurden ganze Sätze ausgelassen")
+        case .parakeet: return L("Empfohlen für deutsche Gespräche · 25 europäische Sprachen · ca. 1–3 GB")
+        case .qwen: return L("Experimentell · mehrsprachig · ca. 1 GB · nur Abschnittszeitmarken")
         }
     }
 }
 
 public struct AppSettings: Codable, Sendable {
+    // Missing in existing settings means German, preserving the previous interface.
+    public var interfaceLanguage: InterfaceLanguage? = .system
     public var engine: EngineKind = .parakeet
     public var modelPaths: [String: String] = [:]
     public var runtimeDirectory: String = ""
@@ -116,7 +123,7 @@ public struct AppSettings: Codable, Sendable {
         get { automaticSpeakerDetection ?? true }
         set { automaticSpeakerDetection = newValue }
     }
-    public var customInstructions: String = "Korrigiere Rechtschreibung und Zeichensetzung. Behalte Sprache, Bedeutung, Namen und Zahlen bei. Erfinde keine Inhalte. Gib nur den bearbeiteten Text zurück."
+    public var customInstructions: String = L("Korrigiere Rechtschreibung und Zeichensetzung. Behalte Sprache, Bedeutung, Namen und Zahlen bei. Erfinde keine Inhalte. Gib nur den bearbeiteten Text zurück.")
     public var llmModelPath: String = ""
     public var llmModelID: String = "mlx-community/Qwen3-1.7B-4bit"
     public var keepDictationAudio: Bool = false
@@ -124,10 +131,19 @@ public struct AppSettings: Codable, Sendable {
 }
 
 public enum TranscriptEditor {
+    public static func nameSpeaker(_ id: String, name: String, in recording: inout Recording) {
+        guard let index = recording.speakers.firstIndex(where: { $0.id == id }) else { return }
+        recording.speakers[index].name = name
+        for i in recording.segments.indices where recording.segments[i].speakerID == id {
+            if !recording.segments[i].speakerLocked { recording.segments[i].allowsParagraphGrouping = true }
+            recording.segments[i].speakerLocked = true
+        }
+    }
     /// Manual edits always win over a fresh automatic analysis.
-    public static func assign(_ turns: [SpeakerTurn], to segments: [Segment]) -> [Segment] {
-        let ordered = turns.enumerated().filter { $0.element.start.isFinite && $0.element.end.isFinite && $0.element.end > $0.element.start }
+    public static func assign(_ turns: [SpeakerTurn], to segments: [Segment], repairGaps: Bool = false) -> [Segment] {
+        var ordered = turns.enumerated().filter { $0.element.start.isFinite && $0.element.end.isFinite && $0.element.end > $0.element.start }
             .sorted { $0.element.start == $1.element.start ? $0.offset < $1.offset : $0.element.start < $1.element.start }.map(\.element)
+        if repairGaps { ordered = SpeakerAlignment.bridgingShortGaps(ordered) }
         var prefixEnds: [Double] = [], latest = -Double.infinity
         for turn in ordered { latest = max(latest, turn.end); prefixEnds.append(latest) }
         // Search the overlapping time range once per word, rather than every turn in a long meeting.
@@ -141,15 +157,36 @@ public enum TranscriptEditor {
             return low
         }
         func best(_ start: Double, _ end: Double) -> String? {
-            guard start.isFinite, end.isFinite, end > start else { return nil }
-            let lower = firstIndex { prefixEnds[$0] > start }, upper = firstIndex { ordered[$0].start >= end }
-            guard lower < upper else { return nil }
+            guard start.isFinite, end.isFinite, end >= start, repairGaps || end > start else { return nil }
+            // Some ASR tokens have a point timestamp. Look at that point, without stretching
+            // ordinary words across a real speaker boundary.
+            let queryEnd = end > start ? end : end.nextUp
+            let lower = firstIndex { prefixEnds[$0] > start }, upper = firstIndex { ordered[$0].start >= queryEnd }
             var scores: [String: Double] = [:]
-            for i in lower..<upper {
-                let turn = ordered[i], overlap = min(end, turn.end) - max(start, turn.start)
-                if overlap > 0 { scores[turn.speakerID, default: 0] += overlap }
+            if lower < upper {
+                for i in lower..<upper {
+                    let turn = ordered[i], overlap = min(queryEnd, turn.end) - max(start, turn.start)
+                    if overlap > 0 { scores[turn.speakerID, default: 0] += overlap }
+                }
             }
-            return scores.sorted { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }.first?.key
+            if let match = scores.sorted(by: { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }).first?.key { return match }
+            guard repairGaps else { return nil }
+            // Only an entirely uncovered, short word/range can use a nearby turn edge.
+            // Two different plausible voices remain ambiguous, even if one is closer.
+            let tolerance = 0.75
+            let from = firstIndex { prefixEnds[$0] >= end - tolerance }
+            let to = firstIndex { ordered[$0].start > start + tolerance }
+            var candidates = Set<String>()
+            if from < to {
+                for i in from..<to {
+                    let turn = ordered[i]
+                    if (turn.end <= start && end - turn.end <= tolerance) ||
+                       (turn.start >= end && turn.start - start <= tolerance) {
+                        candidates.insert(turn.speakerID)
+                    }
+                }
+            }
+            return candidates.count == 1 ? candidates.first : nil
         }
         return segments.flatMap { segment -> [Segment] in
             if segment.speakerLocked { return [segment] }
@@ -203,19 +240,25 @@ public enum Exporter {
     public static func markdown(_ recording: Recording) -> String {
         var output = "# \(recording.title)\n\n"
         if let source = recording.source {
-            output += "Quelle: " + source.url + "\n\n"
-            if let date = source.publishedOn { output += "Veröffentlicht: " + date + "\n\n" }
-            if let publisher = source.publisher { output += "Herausgeber: " + publisher + "\n\n" }
+            output += L("Quelle: ") + source.url + "\n\n"
+            if let date = source.publishedOn { output += L("Veröffentlicht: ") + date + "\n\n" }
+            if let publisher = source.publisher { output += L("Herausgeber: ") + publisher + "\n\n" }
         }
-        for segment in recording.segments {
-            output += "**\(recording.speakerName(segment.speakerID))** · \(timestamp(segment.start))\n\n\(segment.text)\n\n"
+        output += ConferenceLayout.markdown(recording)
+        if recording.transcriptionProgress != nil { output += L("\n**Unvollständiger Zwischenstand**\n\n") }
+        if recording.conference != nil {
+            output += ConferenceLayout.transcriptMarkdown(recording)
+        } else {
+            for segment in recording.segments {
+                output += "**\(recording.speakerName(segment.speakerID))** · \(timestamp(ConferenceLayout.sourceTime(segment.start, recording: recording)))\n\n\(segment.text)\n\n"
+            }
         }
-        if !recording.notes.isEmpty { output += "## Notizen\n\n\(recording.notes)\n" }
-        if !recording.refinedText.isEmpty { output += "\n## KI-Bearbeitung\n\n\(recording.refinedText)\n" }
+        if !recording.notes.isEmpty { output += L("## Notizen\n\n\(recording.notes)\n") }
+        if !recording.refinedText.isEmpty { output += L("\n## KI-Bearbeitung\n\n\(recording.refinedText)\n") }
         return output
     }
     public static func srt(_ recording: Recording) -> String {
         func time(_ value: Double) -> String { let ms = max(0, Int((value * 1000).rounded())); return timestamp(Double(ms / 1000)) + String(format: ",%03d", ms % 1000) }
-        return recording.segments.enumerated().map { i, s in "\(i + 1)\n\(time(s.start)) --> \(time(s.end))\n\(recording.speakerName(s.speakerID)): \(s.text)\n" }.joined(separator: "\n")
+        return ConferenceReview.includedSegments(recording).enumerated().map { i, s in "\(i + 1)\n\(time(s.start)) --> \(time(s.end))\n\(recording.speakerName(s.speakerID)): \(s.text)\n" }.joined(separator: "\n")
     }
 }

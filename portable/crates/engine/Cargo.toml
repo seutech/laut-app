@@ -1,0 +1,30 @@
+[package]
+name = "laut-engine"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Local storage, processing and research engine for Laut"
+[dependencies]
+laut-core.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+uuid.workspace = true
+sha2.workspace = true
+fs2 = "0.4"
+ureq = { version = "3", default-features = false }
+tar = "0.4"
+bzip2 = "0.6"
+url = "2"
+command-group = { version = "5", default-features = false }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+[target.'cfg(not(windows))'.dependencies]
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+[target.'cfg(windows)'.dependencies]
+ureq = { version = "3", default-features = false, features = ["native-tls"] }
+[lints]
+workspace = true

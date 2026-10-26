@@ -1,0 +1,120 @@
+name: Rust
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    env:
+      LAUT_REMAP_SOURCE: ${{ github.workspace }}
+      RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=/src/laut
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            label: macOS ARM64
+            package: macos
+            archive: Laut-macOS-ARM64.zip
+          - os: windows-latest
+            label: Windows x64
+            package: windows
+            archive: Laut-Windows-X64.zip
+          - os: ubuntu-24.04
+            label: Linux x64
+            package: linux
+            archive: Laut-Linux-X64.tar.gz
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: portable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.99.1
+        with:
+          components: rustfmt, clippy
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify macOS release architecture
+        if: matrix.package == 'macos'
+        run: test "$(uname -m)" = "arm64"
+      - name: Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y cmake ffmpeg libasound2-dev libudev-dev libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: portable
+      - name: Locked dependency graph
+        run: cargo fetch --locked
+      - name: Formatting
+        run: cargo fmt --all -- --check
+      - name: Dependency layers
+        run: python check-layers.py
+      - name: Tests
+        run: cargo test --workspace --locked
+      - name: Lints
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Release binaries
+        run: cargo build --release --workspace --locked
+      - name: Pinned CPU speech worker
+        run: python scripts/build-whisper.py
+      - name: Pinned CPU text workers
+        run: python scripts/build-llama.py
+      - name: CLI smoke test
+        run: cargo run --release -p laut-cli --locked -- inspect fixtures/conversation.json
+      - name: Actual FFmpeg integration tests
+        if: runner.os == 'Linux'
+        env:
+          LAUT_TEST_FFMPEG: /usr/bin/ffmpeg
+          LAUT_TEST_FFPROBE: /usr/bin/ffprobe
+        run: cargo test --workspace --locked -- --include-ignored --nocapture
+      - name: Package macOS
+        if: matrix.package == 'macos'
+        working-directory: .
+        run: bash scripts/package-macos-release.sh
+      - name: Package Windows
+        if: matrix.package == 'windows'
+        working-directory: .
+        run: python portable/scripts/package-release.py --platform windows --arch X64
+      - name: Package Linux
+        if: matrix.package == 'linux'
+        working-directory: .
+        run: python portable/scripts/package-release.py --platform linux --arch X64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive }}
+          path: |
+            dist/${{ matrix.archive }}
+            dist/${{ matrix.archive }}.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish prerelease
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Verify release version
+        run: test "$(cat VERSION)" = "${GITHUB_REF_NAME#v}"
+      - name: Verify archive checksums
+        working-directory: dist
+        run: for checksum in *.sha256; do sha256sum -c "$checksum"; done
+      - name: Create GitHub prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --prerelease --title "Laut ${GITHUB_REF_NAME#v}" --notes-file RELEASE_NOTES.md

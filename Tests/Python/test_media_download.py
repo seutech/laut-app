@@ -24,6 +24,38 @@ class MediaDownloadTests(unittest.TestCase):
         self.args = types.SimpleNamespace(folder=str(self.folder), url='https://www.youtube.com/watch?v=YE7VzlLtp-4', provider='YouTube',
                                           ytdlp='/yt-dlp', deno='/deno', ffmpeg='/ffmpeg', ffprobe='/ffprobe')
 
+    def test_clip_range_validation_and_cache_identity(self):
+        for start, end in [(float('nan'), 1800), (0, float('inf')), (10, 5), (-1, 30), (0, 86401)]:
+            self.args.clip_start, self.args.clip_end = start, end
+            with patch.object(media, 'run', side_effect=AssertionError('no network')), self.assertRaises(ValueError):
+                media.download(self.args)
+        self.args.clip_start, self.args.clip_end = 0, 1800
+        (self.folder / 'audio.m4a').write_bytes(b'fixture')
+        media.atomic_json(self.folder / 'result.json', {'filename': 'audio.m4a', 'fileSize': 7, 'source': {'url': self.args.url}})
+        with self.assertRaises(ValueError):
+            media.download(self.args)
+
+    def test_seven_hour_source_clip_and_shifted_chapters(self):
+        self.args.clip_start, self.args.clip_end = 600, 2400
+        info = {'duration': 25150, 'vcodec': 'none', 'acodec': 'aac', 'title': 'Conference',
+                'chapters': [{'start_time': 0, 'end_time': 1200, 'title': 'Opening'},
+                             {'start_time': 1200, 'end_time': 3000, 'title': 'Strategy'},
+                             {'start_time': 3000, 'end_time': 4000, 'title': 'Later'}]}
+        def run(command, *args, **kwargs):
+            if '--dump-single-json' in command: return json.dumps(info)
+            self.assertIn('--download-sections', command)
+            self.assertIn('*600-2400', command)
+            (self.folder / 'source.m4a').write_bytes(b'complete')
+            return ''
+        with patch.object(media, 'run', side_effect=run), patch.object(media, 'inspect_audio', return_value=1800):
+            result = media.download(self.args)
+        self.assertEqual(result['source']['originalDuration'], 25150)
+        self.assertEqual([c['start'] for c in result['source']['chapters']], [0, 600])
+        self.assertEqual(result['source']['clipStart'], 600)
+        self.assertEqual(result['duration'], 1800)
+        with patch.object(media, 'run', side_effect=AssertionError('must reuse')):
+            self.assertEqual(media.download(self.args), result)
+
     def test_audio_only_validation(self):
         probe = {'format': {'duration': '10'}, 'streams': [{'codec_type': 'audio'}]}
         for extra, accepted in [(None, True), ({'codec_type': 'video', 'disposition': {'attached_pic': 1}}, True), ({'codec_type': 'video'}, False)]:

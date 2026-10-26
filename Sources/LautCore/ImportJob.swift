@@ -3,6 +3,7 @@ import Foundation
 public struct SourceMetadata: Codable, Equatable, Sendable {
     public var url: String
     public var provider: String
+    public var providerLabel: String { provider == "Audio-Link" ? L("Audio-Link") : provider }
     public var externalID: String?
     public var originalTitle: String?
     public var publisher: String?
@@ -12,6 +13,10 @@ public struct SourceMetadata: Codable, Equatable, Sendable {
     public var importedAt: Date
     public var eventDate: String?
     public var reportingPeriod: String?
+    public var clipStart: Double?
+    public var clipEnd: Double?
+    public var originalDuration: Double?
+    public var chapters: [TranscriptChapter]?
     public init(url: String, provider: String, importedAt: Date = Date()) {
         self.url = url; self.provider = provider; self.importedAt = importedAt
     }
@@ -25,7 +30,7 @@ public struct SourceLink: Equatable, Sendable {
         guard var parts = URLComponents(string: input.trimmingCharacters(in: .whitespacesAndNewlines)),
               parts.scheme?.lowercased() == "https", let host = parts.host?.lowercased(),
               !host.isEmpty, parts.user == nil, parts.password == nil,
-              parts.port == nil || parts.port == 443 else { throw ImportJobError("Bitte einen HTTPS-Link ohne Zugangsdaten eingeben.") }
+              parts.port == nil || parts.port == 443 else { throw ImportJobError(L("Bitte einen HTTPS-Link ohne Zugangsdaten eingeben.")) }
         let youtube = ["youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be", "www.youtu.be"]
         if youtube.contains(host) {
             let path = parts.path.split(separator: "/").map(String.init)
@@ -35,17 +40,17 @@ public struct SourceLink: Equatable, Sendable {
             else if let first = path.first, ["shorts", "embed", "live"].contains(first), path.count == 2 { id = path[1] }
             else { id = nil }
             guard let id, id.range(of: "^[A-Za-z0-9_-]{11}$", options: .regularExpression) != nil else {
-                throw ImportJobError("Bitte den Link eines einzelnen YouTube-Videos verwenden. Playlists und Kanäle werden noch nicht importiert.")
+                throw ImportJobError(L("Bitte den Link eines einzelnen YouTube-Videos verwenden. Playlists und Kanäle werden noch nicht importiert."))
             }
             return SourceLink(url: URL(string: "https://www.youtube.com/watch?v=" + id)!, key: "youtube:" + id, provider: "YouTube")
         }
         guard host != "localhost", !host.hasSuffix(".localhost"), !host.hasSuffix(".local"),
               !host.contains(":"), !host.allSatisfy({ $0.isNumber || $0 == "." }),
               ["mp3", "m4a", "aac", "wav", "flac", "ogg", "opus", "aiff", "aif"].contains((parts.path as NSString).pathExtension.lowercased()) else {
-            throw ImportJobError("Unterstützt werden einzelne YouTube-Videos und direkte Audio-Dateilinks (z. B. MP3 oder M4A).")
+            throw ImportJobError(L("Unterstützt werden einzelne YouTube-Videos und direkte Audio-Dateilinks (z. B. MP3 oder M4A)."))
         }
         parts.fragment = nil
-        guard let url = parts.url else { throw ImportJobError("Ungültiger Link.") }
+        guard let url = parts.url else { throw ImportJobError(L("Ungültiger Link.")) }
         return SourceLink(url: url, key: url.absoluteString, provider: "Audio-Link")
     }
 }
@@ -60,13 +65,13 @@ public enum ImportStage: String, Codable, Sendable {
     case queued, downloading, importing, transcribing, paused, complete, failed
     public var label: String {
         switch self {
-        case .queued: return "Wartet"
-        case .downloading: return "Audio laden"
-        case .importing: return "Datei übernehmen"
-        case .transcribing: return "Lokal transkribieren"
-        case .paused: return "Pausiert"
-        case .complete: return "Fertig"
-        case .failed: return "Fehlgeschlagen"
+        case .queued: return L("Wartet")
+        case .downloading: return L("Audio laden")
+        case .importing: return L("Datei übernehmen")
+        case .transcribing: return L("Lokal transkribieren")
+        case .paused: return L("Pausiert")
+        case .complete: return L("Fertig")
+        case .failed: return L("Fehlgeschlagen")
         }
     }
     public var unfinished: Bool { self != .complete && self != .failed && self != .paused }
@@ -85,11 +90,15 @@ public struct ImportJob: Codable, Identifiable, Sendable {
     public var stage: ImportStage = .queued
     public var autoTranscribe: Bool
     public var message: String?
+    public var clip: MediaClip?
+    public var documentPaths: [String]?
+    public var conferenceVocabulary: String?
+    public var transcriptionLanguage: String?
     public init(kind: Kind, input: String, sourceKey: String, title: String, autoTranscribe: Bool = true) {
         self.kind = kind; self.input = input; self.sourceKey = sourceKey; self.title = title; self.autoTranscribe = autoTranscribe
     }
     public mutating func recover() {
-        if stage.unfinished { stage = .paused; message = "Nach Neustart pausiert. Mit Fortsetzen geht es beim letzten gespeicherten Schritt weiter." }
+        if stage.unfinished { stage = .paused; message = L("Nach Neustart pausiert. Mit Fortsetzen geht es beim letzten gespeicherten Schritt weiter.") }
     }
 }
 
@@ -102,7 +111,7 @@ public struct ImportJobStore {
         let path = root.appendingPathComponent("import-jobs.json")
         guard FileManager.default.fileExists(atPath: path.path) else { return [] }
         var jobs = try JSONDecoder().decode([ImportJob].self, from: Data(contentsOf: path))
-        guard Set(jobs.map(\.id)).count == jobs.count else { throw ImportJobError("Auftragsdatei enthält doppelte Kennungen.") }
+        guard Set(jobs.map(\.id)).count == jobs.count else { throw ImportJobError(L("Auftragsdatei enthält doppelte Kennungen.")) }
         for i in jobs.indices { jobs[i].recover() }
         return jobs
     }

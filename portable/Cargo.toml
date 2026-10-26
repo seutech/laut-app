@@ -1,0 +1,30 @@
+[workspace]
+resolver = "3"
+members = ["crates/core", "crates/engine", "crates/capture", "apps/cli", "apps/desktop"]
+default-members = ["crates/core", "crates/engine", "apps/cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+publish = false
+license = "MIT"
+repository = "https://github.com/seutech/laut-app"
+homepage = "https://github.com/seutech/laut-app"
+
+[workspace.dependencies]
+laut-core = { path = "crates/core" }
+laut-engine = { path = "crates/engine" }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["arbitrary_precision"] }
+uuid = { version = "1", features = ["v4"] }
+tempfile = "3"
+sha2 = "0.10"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[profile.release]
+lto = "thin"
+strip = "symbols"

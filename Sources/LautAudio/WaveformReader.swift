@@ -1,3 +1,4 @@
+import LautCore
 import AVFoundation
 import Foundation
 
@@ -28,9 +29,9 @@ public actor WaveformReader {
            saved.waveform.peaks.count <= 60000, saved.waveform.peaks.allSatisfy({ $0.isFinite && $0 >= 0 && $0 <= 1 }) { return saved.waveform }
         let asset = AVURLAsset(url: source)
         let duration = try await asset.load(.duration).seconds
-        guard duration.isFinite, duration > 0 else { throw LocalEngineError("Keine gültige Audiodauer für die Wellenform.") }
+        guard duration.isFinite, duration > 0 else { throw LocalEngineError(L("Keine gültige Audiodauer für die Wellenform.")) }
         let tracks = try await asset.loadTracks(withMediaType: .audio)
-        guard !tracks.isEmpty else { throw LocalEngineError("Keine Audiospur für die Wellenform.") }
+        guard !tracks.isEmpty else { throw LocalEngineError(L("Keine Audiospur für die Wellenform.")) }
         let reader = try AVAssetReader(asset: asset)
         let output = AVAssetReaderAudioMixOutput(audioTracks: tracks, audioSettings: [AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 16000, AVNumberOfChannelsKey: 1, AVLinearPCMBitDepthKey: 32, AVLinearPCMIsFloatKey: true, AVLinearPCMIsBigEndianKey: false, AVLinearPCMIsNonInterleaved: false])
         if tracks.count > 1 {
@@ -43,7 +44,7 @@ public actor WaveformReader {
             output.audioMix = mix
         }
         reader.add(output)
-        guard reader.startReading() else { throw reader.error ?? LocalEngineError("Wellenform konnte nicht gelesen werden.") }
+        guard reader.startReading() else { throw reader.error ?? LocalEngineError(L("Wellenform konnte nicht gelesen werden.")) }
         let count = Int(min(60000, max(1024, ceil(duration * 30))))
         var peaks = [Float](repeating: 0, count: count)
         do {
@@ -55,7 +56,7 @@ public actor WaveformReader {
                 guard !values.isEmpty else { continue }
                 let byteCount = values.count * MemoryLayout<Float>.size
                 let result = values.withUnsafeMutableBytes { CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: byteCount, destination: $0.baseAddress!) }
-                guard result == kCMBlockBufferNoErr else { throw LocalEngineError("Ungültige Audiodaten für die Wellenform.") }
+                guard result == kCMBlockBufferNoErr else { throw LocalEngineError(L("Ungültige Audiodaten für die Wellenform.")) }
                 let start = CMSampleBufferGetPresentationTimeStamp(sample).seconds
                 guard start.isFinite else { continue }
                 for (i, value) in values.enumerated() where value.isFinite {
@@ -65,7 +66,7 @@ public actor WaveformReader {
                 }
             }
             try Task.checkCancellation()
-            guard reader.status == .completed else { throw reader.error ?? LocalEngineError("Wellenform unvollständig.") }
+            guard reader.status == .completed else { throw reader.error ?? LocalEngineError(L("Wellenform unvollständig.")) }
         } catch { reader.cancelReading(); throw error }
         let waveform = WaveformData(duration: duration, peaks: peaks)
         let saved = Cache(filename: source.lastPathComponent, bytes: bytes, modified: modified, waveform: waveform)
