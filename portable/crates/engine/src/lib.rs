@@ -151,11 +151,18 @@ impl Session {
             );
         }
         let staged_recording = staging.path().join("recording.json");
-        fs::write(&staged_recording, &data).context("Cannot stage recording.json")?;
-        fs::File::open(&staged_recording)
-            .context("Cannot reopen staged recording.json")?
+        let mut staged_file = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&staged_recording)
+            .context("Cannot create staged recording.json")?;
+        staged_file
+            .write_all(&data)
+            .context("Cannot write staged recording.json")?;
+        staged_file
             .sync_all()
             .context("Cannot sync staged recording.json")?;
+        drop(staged_file);
         // Reserve the destination with create_dir: unlike rename, this cannot replace an
         // empty directory created concurrently. A marker makes an interrupted publish clear.
         fs::create_dir(destination).context("Cannot reserve project destination")?;
