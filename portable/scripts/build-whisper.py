@@ -27,9 +27,16 @@ def main():
     if hashlib.sha256(archive.read_bytes()).hexdigest() != SHA256:
         raise SystemExit('Whisper source checksum mismatch')
     source = cache / f'whisper.cpp-{VERSION}'
-    if not source.exists():
+    required_source_files = (source / 'CMakeLists.txt', source / 'LICENSE')
+    if not all(path.is_file() for path in required_source_files):
+        if source.is_dir() and not source.is_symlink():
+            shutil.rmtree(source)
+        elif source.exists() or source.is_symlink():
+            source.unlink()
         with tarfile.open(archive) as tar:
             tar.extractall(cache, filter='data')
+    if not all(path.is_file() for path in required_source_files):
+        raise SystemExit('Whisper source archive did not produce a complete source tree')
     build = cache / ('build-' + platform.system() + '-' + platform.machine())
     command = ['cmake', '-S', str(source), '-B', str(build),
                '-DCMAKE_BUILD_TYPE=Release', '-DBUILD_SHARED_LIBS=OFF',
