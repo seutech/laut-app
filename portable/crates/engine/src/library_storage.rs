@@ -245,6 +245,9 @@ impl Library {
         );
         let target = root.join(&token);
         ensure!(!target.try_exists()?, "Trash entry already exists");
+        // The exclusive library lock remains held, so no save can begin after this point.
+        // Windows cannot rename a directory while a file handle inside it is still open.
+        drop(lock);
         fs::rename(folder, target)
             .context("Cannot move recording; files remain at their original location")?;
         Ok(token)
